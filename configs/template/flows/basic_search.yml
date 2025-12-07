@@ -1,0 +1,41 @@
+flows:
+  - name: basic_search
+    description: "Basic search flow without caching"
+    tasks:
+      - name: parse_params
+      - name: query_builder
+      - name: search_execute
+      - name: response_builder
+    metadata:
+      version: "1.0"
+      cache_enabled: false
+
+  - name: cached_search
+    description: "Search flow with caching"
+    tasks:
+      - name: parse_params
+      
+      - name: cache_check
+        overrides:
+          - condition:
+              tag: "no-cache"
+            action: skip
+          - condition:
+              tag: "premium"
+            action: replace
+            task: premium_cache_check
+      
+      - name: query_builder
+      
+      - name: search_execute
+      
+      - name: cache_save
+        overrides:
+          - condition:
+              tag: "no-cache"
+            action: skip
+      
+      - name: response_builder
+    metadata:
+      version: "1.0"
+      cache_enabled: true

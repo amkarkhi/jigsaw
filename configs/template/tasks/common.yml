@@ -1,0 +1,49 @@
+tasks:
+  - name: parse_params
+    description: "Parse and validate input parameters"
+    inputs:
+      - name: query
+        type: string
+        required: true
+      - name: limit
+        type: int
+        required: false
+        default: 10
+      - name: offset
+        type: int
+        required: false
+        default: 0
+    outputs:
+      - name: parsed_query
+        type: string
+        required: true
+      - name: pagination
+        type: object
+        required: true
+    logic: parse_and_validate_params
+    timeout: 1000
+    fallback:
+      strategy: abort
+      message: "Invalid input parameters"
+
+  - name: response_builder
+    description: "Build final JSON response"
+    inputs:
+      - name: data
+        type: any
+        required: true
+      - name: metadata
+        type: object
+        required: false
+    outputs:
+      - name: response
+        type: object
+        required: true
+    logic: build_json_response
+    timeout: 500
+    fallback:
+      strategy: continue
+      defaults:
+        response:
+          status: "error"
+          data: null

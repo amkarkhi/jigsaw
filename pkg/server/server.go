@@ -1,0 +1,477 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/amkarkhi/jigsaw/pkg/config"
+	"github.com/amkarkhi/jigsaw/pkg/engine"
+	"github.com/amkarkhi/jigsaw/pkg/provider"
+	"github.com/amkarkhi/jigsaw/pkg/router"
+	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/amkarkhi/jigsaw/pkg/validator"
+	
+	"github.com/gin-gonic/gin"
+)
+
+// Server is the HTTP server
+type Server struct {
+	engine           *engine.Engine
+	router           *router.Router
+	providerRegistry *provider.Registry
+	configLoader     *config.Loader
+	validator        *validator.Validator
+	logger           types.Logger
+	config           *types.Config
+	ginEngine        *gin.Engine
+	httpServer       *http.Server
+	mu               sync.RWMutex
+	hotReload        bool
+}
+
+// Options for server configuration
+type Options struct {
+	Port      int
+	HotReload bool
+	LogLevel  string
+	Pretty    bool
+}
+
+// New creates a new server instance
+func New(cfg *types.Config, logger types.Logger, opts Options) *Server {
+	// Create validator
+	val := validator.New(logger)
+	
+	// Create engine
+	eng := engine.New(cfg, val, logger)
+	
+	// Create router
+	rtr := router.New(cfg, logger)
+	
+	// Create provider registry
+	providerReg := provider.NewRegistry(logger)
+	
+	// Register all providers
+	for _, prov := range cfg.Providers {
+		providerReg.RegisterConfig(prov)
+	}
+	
+	// Create config loader
+	configLoader := config.NewLoader(logger)
+	
+	s := &Server{
+		engine:           eng,
+		router:           rtr,
+		providerRegistry: providerReg,
+		configLoader:     configLoader,
+		validator:        val,
+		logger:           logger,
+		config:           cfg,
+		hotReload:        opts.HotReload,
+	}
+	
+	// Setup Gin
+	if !opts.Pretty {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	
+	s.ginEngine = gin.New()
+	s.ginEngine.Use(gin.Recovery())
+	s.ginEngine.Use(s.loggingMiddleware())
+	
+	// Register routes
+	s.registerRoutes()
+	
+	return s
+}
+
+// NewWithEngine creates a new server instance with a pre-configured engine
+// Use this when you want to register custom logic handlers
+func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *types.Config, logger types.Logger, opts Options) *Server {
+	// Create router
+	rtr := router.New(cfg, logger)
+	
+	// Create config loader
+	configLoader := config.NewLoader(logger)
+	
+	// Create validator
+	val := validator.New(logger)
+	
+	s := &Server{
+		engine:           eng,
+		router:           rtr,
+		providerRegistry: providerReg,
+		configLoader:     configLoader,
+		validator:        val,
+		logger:           logger,
+		config:           cfg,
+		hotReload:        opts.HotReload,
+	}
+	
+	// Setup Gin
+	if !opts.Pretty {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	
+	s.ginEngine = gin.New()
+	s.ginEngine.Use(gin.Recovery())
+	s.ginEngine.Use(s.loggingMiddleware())
+	
+	// Register routes
+	s.registerRoutes()
+	
+	return s
+}
+
+// GetEngine returns the server's engine (for registering logic handlers)
+func (s *Server) GetEngine() *engine.Engine {
+	return s.engine
+}
+
+// Start starts the HTTP server
+func (s *Server) Start(port int, configPath string) error {
+	s.logger.Info("Starting Jigsaw server", map[string]any{
+		"port":       port,
+		"hot_reload": s.hotReload,
+	})
+	
+	// Initialize eager providers
+	if err := s.providerRegistry.InitAllEager(context.Background()); err != nil {
+		return fmt.Errorf("failed to initialize providers: %w", err)
+	}
+	
+	// Start hot-reload watcher if enabled
+	if s.hotReload {
+		if err := s.configLoader.Watch(configPath, s.onConfigChange); err != nil {
+			s.logger.Warn("Failed to start config watcher", map[string]any{
+				"error": err.Error(),
+			})
+		} else {
+			s.logger.Info("Hot-reload enabled", nil)
+		}
+	}
+	
+	// Create HTTP server
+	s.httpServer = &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: s.ginEngine,
+	}
+	
+	s.logger.Info("Server started successfully", map[string]any{
+		"address": s.httpServer.Addr,
+	})
+	
+	return s.httpServer.ListenAndServe()
+}
+
+// Stop stops the HTTP server
+func (s *Server) Stop(ctx context.Context) error {
+	s.logger.Info("Stopping server", nil)
+	
+	// Stop config watcher
+	if s.hotReload {
+		s.configLoader.StopWatch()
+	}
+	
+	// Close provider connections
+	if err := s.providerRegistry.Close(); err != nil {
+		s.logger.Error("Error closing providers", err, nil)
+	}
+	
+	// Shutdown HTTP server
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	
+	return nil
+}
+
+// registerRoutes registers all endpoint routes
+func (s *Server) registerRoutes() {
+	// Health check
+	s.ginEngine.GET("/health", s.healthHandler)
+	
+	// Validation endpoints for UI
+	s.ginEngine.GET("/api/_validate/logic", s.validateLogicHandlers)
+	s.ginEngine.GET("/api/_validate/logic/:name", s.getLogicHandlerInfo)
+	s.ginEngine.GET("/api/_logic", s.listLogicHandlers)
+	
+	// Register all configured endpoints
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	for _, endpoint := range s.config.Endpoints {
+		s.registerEndpoint(endpoint)
+	}
+}
+
+// registerEndpoint registers a single endpoint
+func (s *Server) registerEndpoint(endpoint *types.Endpoint) {
+	handler := s.createEndpointHandler(endpoint)
+	
+	switch endpoint.Method {
+	case "GET":
+		s.ginEngine.GET(endpoint.Path, handler)
+	case "POST":
+		s.ginEngine.POST(endpoint.Path, handler)
+	case "PUT":
+		s.ginEngine.PUT(endpoint.Path, handler)
+	case "DELETE":
+		s.ginEngine.DELETE(endpoint.Path, handler)
+	case "PATCH":
+		s.ginEngine.PATCH(endpoint.Path, handler)
+	default:
+		s.ginEngine.POST(endpoint.Path, handler)
+	}
+	
+	s.logger.Info("Endpoint registered", map[string]any{
+		"path":   endpoint.Path,
+		"method": endpoint.Method,
+		"name":   endpoint.Name,
+	})
+}
+
+// createEndpointHandler creates a Gin handler for an endpoint
+func (s *Server) createEndpointHandler(endpoint *types.Endpoint) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		startTime := time.Now()
+		
+	// Parse body once for POST/PUT/PATCH requests
+	var body map[string]any
+	if c.Request.Method != "GET" && c.Request.Method != "DELETE" {
+		if err := c.BindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid JSON body",
+			})
+			return
+		}
+	}
+	
+	// Extract sub parameter
+	subStr := c.Query("sub")
+	if subStr == "" && body != nil {
+		if subVal, ok := body["sub"]; ok {
+			switch v := subVal.(type) {
+			case float64:
+				subStr = strconv.Itoa(int(v))
+			case int:
+				subStr = strconv.Itoa(v)
+			case string:
+				subStr = v
+			}
+		}
+	}
+	
+	if subStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "sub parameter is required",
+		})
+		return
+	}
+	
+	sub, err := strconv.Atoi(subStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "sub parameter must be an integer",
+		})
+		return
+	}
+	
+	// Route to flow
+	s.mu.RLock()
+	flow, err := s.router.Route(endpoint, sub)
+	s.mu.RUnlock()
+	
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
+	// Extract parameters
+	params := make(map[string]any)
+	
+	// Query parameters
+	for key, values := range c.Request.URL.Query() {
+		if len(values) > 0 {
+			params[key] = values[0]
+		}
+	}
+	
+	// Body parameters (already parsed above)
+	if body != nil {
+		for k, v := range body {
+			params[k] = v
+		}
+	}
+		
+		// Extract headers
+		headers := make(map[string]string)
+		for key, values := range c.Request.Header {
+			if len(values) > 0 {
+				headers[key] = values[0]
+			}
+		}
+		
+		// Execute flow
+		result, err := s.engine.ExecuteFlow(
+			c.Request.Context(),
+			flow.Name,
+			sub,
+			params,
+			headers,
+			s.providerRegistry,
+		)
+		
+		executionTime := time.Since(startTime).Milliseconds()
+		
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":         "error",
+				"error":          err.Error(),
+				"execution_time": executionTime,
+			})
+			return
+		}
+		
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+// healthHandler handles health check requests
+func (s *Server) healthHandler(c *gin.Context) {
+	s.mu.RLock()
+	taskCount := len(s.config.Tasks)
+	flowCount := len(s.config.Flows)
+	providerCount := len(s.config.Providers)
+	endpointCount := len(s.config.Endpoints)
+	s.mu.RUnlock()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"config": gin.H{
+			"tasks":     taskCount,
+			"flows":     flowCount,
+			"providers": providerCount,
+			"endpoints": endpointCount,
+		},
+	})
+}
+
+// loggingMiddleware logs HTTP requests
+func (s *Server) loggingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		
+		c.Next()
+		
+		duration := time.Since(start)
+		
+		s.logger.Info("HTTP request", map[string]any{
+			"method":   c.Request.Method,
+			"path":     path,
+			"status":   c.Writer.Status(),
+			"duration": duration.Milliseconds(),
+			"ip":       c.ClientIP(),
+		})
+	}
+}
+
+// onConfigChange handles configuration reload
+func (s *Server) onConfigChange(newConfig *types.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	s.logger.Info("Reloading configuration", nil)
+	
+	// Validate new configuration
+	if err := s.validator.ValidateConfig(newConfig); err != nil {
+		s.logger.Error("Invalid configuration, keeping old config", err, nil)
+		return
+	}
+	
+	// Update configuration
+	s.config = newConfig
+	
+	// Update router
+	s.router.UpdateConfig(newConfig)
+	
+	// Re-register providers
+	for _, prov := range newConfig.Providers {
+		s.providerRegistry.RegisterConfig(prov)
+	}
+	
+	// NOTE: We do NOT recreate the engine here because that would lose
+	// all registered logic handlers. The engine's config is updated internally.
+	// If you need to reload logic handlers, restart the server.
+	
+	s.logger.Info("Configuration reloaded successfully", map[string]any{
+		"tasks":     len(newConfig.Tasks),
+		"flows":     len(newConfig.Flows),
+		"providers": len(newConfig.Providers),
+		"endpoints": len(newConfig.Endpoints),
+	})
+	s.logger.Warn("Logic handlers are NOT reloaded (restart server to reload handlers)", nil)
+	
+	// Note: Endpoints are not re-registered in Gin as that would require
+	// recreating the entire Gin engine. For endpoint changes, restart is required.
+	s.logger.Warn("Endpoint changes require server restart", nil)
+}
+
+// validateLogicHandlers validates all logic handlers
+func (s *Server) validateLogicHandlers(c *gin.Context) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	errors := s.engine.ValidateLogicHandlers()
+	
+	response := map[string]any{
+		"valid": len(errors) == 0,
+		"total_handlers": len(s.engine.ListLogicHandlers()),
+	}
+	
+	if len(errors) > 0 {
+		response["errors"] = errors
+		c.JSON(http.StatusOK, response)
+	} else {
+		response["message"] = "All logic handlers are properly registered"
+		c.JSON(http.StatusOK, response)
+	}
+}
+
+// getLogicHandlerInfo returns info about a specific logic handler
+func (s *Server) getLogicHandlerInfo(c *gin.Context) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	name := c.Param("name")
+	
+	info, err := s.engine.GetLogicHandlerInfo(name)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, info)
+}
+
+// listLogicHandlers lists all registered logic handlers with metadata
+func (s *Server) listLogicHandlers(c *gin.Context) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	handlers := s.engine.ListLogicHandlersWithInfo()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"handlers": handlers,
+		"total": len(handlers),
+	})
+}

@@ -1,0 +1,12 @@
+flows:
+  - name: basic_search
+    description: "get params -> check cache -> return"
+    version: "1.2.0"
+    tasks:
+      - name: parse_params
+      - name: use_cache
+      - name: response_builder
+    metadata:
+      cache_enabled: true
+      author: "jigsaw-team"
+      last_updated: "2025-10-25"

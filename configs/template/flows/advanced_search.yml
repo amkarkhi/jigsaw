@@ -1,0 +1,42 @@
+flows:
+  - name: advanced_search
+    description: "Advanced search flow with caching and aggregations"
+    tasks:
+      - name: parse_params
+      
+      - name: cache_check
+      
+      - name: query_builder
+      
+      - name: advanced_search
+        overrides:
+          - condition:
+              tag: "basic"
+            action: replace
+            task: search_execute
+      
+      - name: cache_save
+      
+      - name: response_builder
+    metadata:
+      version: "1.0"
+      cache_enabled: true
+      advanced: true
+
+  - name: parallel_search
+    description: "Search flow with parallel operations"
+    tasks:
+      - name: parse_params
+      
+      - parallel:
+          - name: cache_check
+          - name: query_builder
+      
+      - name: search_execute
+      
+      - parallel:
+          - name: cache_save
+          - name: response_builder
+    metadata:
+      version: "1.0"
+      parallel_enabled: true

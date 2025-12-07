@@ -1,0 +1,89 @@
+tasks:
+  - name: cache_check
+    description: "Check if result exists in cache"
+    inputs:
+      - name: key
+        type: string
+        required: true
+      - name: tag
+        type: string
+        required: false
+    outputs:
+      - name: value
+        type: any
+      - name: found
+        type: boolean
+        required: true
+    provider: cache
+    logic: get_from_cache
+    timeout: 1000
+    retry: 2
+    fallback:
+      strategy: continue
+      defaults:
+        value: null
+        found: false
+    metadata:
+      cache_type: "read"
+
+  - name: cache_save
+    description: "Save result to cache"
+    inputs:
+      - name: key
+        type: string
+        required: true
+      - name: value
+        type: any
+        required: true
+      - name: ttl
+        type: int
+        required: false
+        default: 3600
+    outputs:
+      - name: saved
+        type: boolean
+        required: true
+    provider: cache
+    logic: save_to_cache
+    timeout: 2000
+    retry: 3
+    fallback:
+      strategy: continue
+      defaults:
+        saved: false
+      message: "Failed to save to cache, continuing without caching"
+    metadata:
+      cache_type: "write"
+
+  - name: premium_cache_check
+    description: "Premium cache check with extended TTL"
+    inherits: cache_check
+    inputs:
+      - name: key
+        type: string
+        required: true
+      - name: tag
+        type: string
+        required: false
+      - name: premium_level
+        type: int
+        required: false
+        default: 1
+    outputs:
+      - name: value
+        type: any
+      - name: found
+        type: boolean
+        required: true
+    provider: cache
+    logic: get_from_cache_premium
+    timeout: 1000
+    retry: 2
+    fallback:
+      strategy: continue
+      defaults:
+        value: null
+        found: false
+    metadata:
+      cache_type: "premium_read"
+      ttl: 7200

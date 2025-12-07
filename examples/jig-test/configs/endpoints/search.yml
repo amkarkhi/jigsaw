@@ -1,0 +1,21 @@
+endpoints:
+  - name: search
+    path: /api/search
+    method: GET
+    description: "Main search endpoint with multiple flow options"
+    flows:
+      - sub: 1
+        flow_name: basic_search
+    metadata:
+      rate_limit: 100
+      timeout: 30000
+
+  - name: health
+    path: /api/health
+    method: GET
+    description: "Health check endpoint"
+    flows:
+      - sub: 1
+        flow_name: basic_search
+    metadata:
+      public: true

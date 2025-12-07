@@ -1,0 +1,38 @@
+providers:
+  - name: database
+    type: database
+    config:
+      host: localhost
+      port: 3306
+      user: root
+      password: ""
+      database: jigsaw_db
+      max_connections: 20
+      timeout: 30000
+    init_mode: pooled
+    pool_size: 10
+    metadata:
+      description: "Primary database"
+
+  - name: search_engine
+    type: search_engine
+    config:
+      hosts:
+        - http://localhost:9200
+      username: ""
+      password: ""
+      timeout: 10000
+    init_mode: lazy
+    metadata:
+      description: "Primary search engine"
+
+  - name: search_fallback
+    type: search_engine
+    config:
+      host: localhost
+      port: 6333
+      api_key: ""
+      timeout: 10000
+    init_mode: lazy
+    metadata:
+      description: "Fallback search engine"
