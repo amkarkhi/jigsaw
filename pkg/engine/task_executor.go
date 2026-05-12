@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
@@ -32,7 +33,7 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		Inputs:    make(map[string]any),
 		Outputs:   make(map[string]any),
 	}
-	
+
 	// Resolve task inheritance
 	resolvedTask, err := t.resolveTaskInheritance(task)
 	if err != nil {
@@ -41,23 +42,23 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		return taskExec, err
 	}
 	taskExec.ActualTask = resolvedTask
-	
+
 	// Capture task version
 	taskExec.TaskVersion = resolvedTask.Version
 	if taskExec.TaskVersion != "" {
 		execCtx.Versions[fmt.Sprintf("task:%s", task.Name)] = taskExec.TaskVersion
 	}
-	
+
 	t.logger.Debug("Executing task", map[string]any{
 		"task":     task.Name,
 		"version":  resolvedTask.Version,
 		"provider": resolvedTask.Provider,
 		"logic":    resolvedTask.Logic,
 	})
-	
+
 	// Get scoped inputs for the task
 	scopedData := execCtx.GetScopedData(resolvedTask)
-	
+
 	// Validate inputs
 	for _, inputDef := range resolvedTask.Inputs {
 		val, ok := scopedData[inputDef.Name]
@@ -73,11 +74,11 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		}
 		taskExec.Inputs[inputDef.Name] = val
 	}
-	
+
 	// Execute task logic with provider if needed
 	var outputs map[string]any
 	var execErr error
-	
+
 	if resolvedTask.Provider != "" {
 		outputs, execErr = t.executeWithProvider(execCtx, resolvedTask, taskExec.Inputs)
 		// Capture provider version if used
@@ -93,28 +94,30 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	} else {
 		outputs, execErr = t.executeLogic(execCtx, resolvedTask, taskExec.Inputs)
 	}
-	
+
 	if execErr != nil {
 		taskExec.Status = types.StatusFailed
 		taskExec.Error = execErr
-		
+
 		// Handle fallback
 		if resolvedTask.Fallback != nil {
 			return taskExec, t.handleFallback(execCtx, taskExec, execErr)
 		}
-		
+
 		return taskExec, execErr
 	}
-	
-	// Store outputs
+
+	// Store outputs (qualified by branch path inside parallel scopes) and
+	// publish the task's label into the index if one is declared.
 	taskExec.Outputs = outputs
 	execCtx.SetTaskOutput(task.Name, outputs)
-	
+	execCtx.PublishLabel(resolvedTask.Label, task.Name, outputs)
+
 	// Mark as completed
 	now := time.Now()
 	taskExec.Status = types.StatusCompleted
 	taskExec.CompletedAt = &now
-	
+
 	logFields := map[string]any{
 		"task":     task.Name,
 		"outputs":  outputs,
@@ -127,7 +130,7 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		logFields["provider_version"] = taskExec.ProviderVersion
 	}
 	t.logger.Debug("Task completed successfully", logFields)
-	
+
 	return taskExec, nil
 }
 
@@ -138,20 +141,20 @@ func (t *TaskExecutor) executeWithProvider(execCtx *types.ExecutionContext, task
 	if err != nil {
 		return nil, fmt.Errorf("failed to get provider '%s': %w", task.Provider, err)
 	}
-	
+
 	// Ensure provider is connected
 	if !provider.IsConnected() {
 		if err := provider.Connect(execCtx.Context); err != nil {
 			return nil, fmt.Errorf("failed to connect provider '%s': %w", task.Provider, err)
 		}
 	}
-	
+
 	t.logger.Debug("Executing task with provider", map[string]any{
 		"task":     task.Name,
 		"provider": task.Provider,
 		"logic":    task.Logic,
 	})
-	
+
 	// Execute logic with provider
 	return t.executeTaskLogic(execCtx, task.Logic, inputs, provider)
 }
@@ -162,7 +165,7 @@ func (t *TaskExecutor) executeLogic(execCtx *types.ExecutionContext, task *types
 		"task":  task.Name,
 		"logic": task.Logic,
 	})
-	
+
 	// Execute logic without provider
 	return t.executeTaskLogic(execCtx, task.Logic, inputs, nil)
 }
@@ -176,7 +179,7 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 			"logic": logic,
 			"error": err.Error(),
 		})
-		
+
 		// Return inputs as outputs if no handler registered (for testing/development)
 		outputs := make(map[string]any)
 		for k, v := range inputs {
@@ -185,12 +188,12 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 		outputs["_logic_not_implemented"] = logic
 		return outputs, nil
 	}
-	
+
 	t.logger.Debug("Executing task logic", map[string]any{
 		"logic":  logic,
 		"inputs": inputs,
 	})
-	
+
 	// Execute the registered handler
 	return handler(execCtx, inputs, provider)
 }
@@ -198,53 +201,54 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 // handleFallback handles task failure with fallback strategy
 func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, err error) error {
 	task := taskExec.Task
-	
+
 	if task.Fallback == nil {
 		return err
 	}
-	
+
 	t.logger.Warn("Task failed, applying fallback strategy", map[string]any{
 		"task":     task.Name,
 		"strategy": task.Fallback.Strategy,
 		"error":    err.Error(),
 	})
-	
+
 	taskExec.FallbackUsed = true
-	
+
 	switch task.Fallback.Strategy {
 	case "abort":
 		// Stop flow execution
 		return fmt.Errorf("task '%s' failed (abort): %w", task.Name, err)
-		
+
 	case "continue":
 		// Continue with default values
 		if task.Fallback.Defaults != nil {
 			taskExec.Outputs = task.Fallback.Defaults
 			execCtx.SetTaskOutput(task.Name, task.Fallback.Defaults)
+			execCtx.PublishLabel(task.Label, task.Name, task.Fallback.Defaults)
 		}
-		
+
 		now := time.Now()
 		taskExec.Status = types.StatusCompleted
 		taskExec.CompletedAt = &now
-		
+
 		t.logger.Info("Task continued with fallback defaults", map[string]any{
 			"task":     task.Name,
 			"defaults": task.Fallback.Defaults,
 		})
-		
+
 		return nil
-		
+
 	case "switch_task":
 		// This would be handled at flow level
 		return fmt.Errorf("task '%s' failed, switch_task fallback not implemented at task level", task.Name)
-		
+
 	case "switch_provider":
 		// Try alternate providers
 		if len(task.Fallback.Providers) > 0 {
 			return t.tryAlternateProviders(execCtx, taskExec, task.Fallback.Providers)
 		}
 		return err
-		
+
 	default:
 		return err
 	}
@@ -253,42 +257,43 @@ func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec 
 // tryAlternateProviders attempts to execute task with alternate providers
 func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, providers []string) error {
 	task := taskExec.Task
-	
+
 	for _, providerName := range providers {
 		t.logger.Info("Trying alternate provider", map[string]any{
 			"task":     task.Name,
 			"provider": providerName,
 		})
-		
+
 		// Create a temporary task with alternate provider
 		altTask := *task
 		altTask.Provider = providerName
-		
+
 		outputs, err := t.executeWithProvider(execCtx, &altTask, taskExec.Inputs)
 		if err == nil {
 			taskExec.Outputs = outputs
 			taskExec.ProviderUsed = providerName
 			execCtx.SetTaskOutput(task.Name, outputs)
-			
+			execCtx.PublishLabel(task.Label, task.Name, outputs)
+
 			now := time.Now()
 			taskExec.Status = types.StatusCompleted
 			taskExec.CompletedAt = &now
-			
+
 			t.logger.Info("Task succeeded with alternate provider", map[string]any{
 				"task":     task.Name,
 				"provider": providerName,
 			})
-			
+
 			return nil
 		}
-		
+
 		t.logger.Warn("Alternate provider failed", map[string]any{
 			"task":     task.Name,
 			"provider": providerName,
 			"error":    err.Error(),
 		})
 	}
-	
+
 	return fmt.Errorf("all provider fallbacks failed for task '%s'", task.Name)
 }
 
@@ -297,22 +302,23 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 	if task.Inherits == "" {
 		return task, nil
 	}
-	
+
 	parentTask, ok := t.config.Tasks[task.Inherits]
 	if !ok {
 		return nil, fmt.Errorf("parent task '%s' not found for task '%s'", task.Inherits, task.Name)
 	}
-	
+
 	// Recursively resolve parent inheritance
 	resolvedParent, err := t.resolveTaskInheritance(parentTask)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Merge parent and child
 	resolved := &types.Task{
 		Name:        task.Name,
 		Description: task.Description,
+		Label:       task.Label,
 		Inputs:      task.Inputs,
 		Outputs:     task.Outputs,
 		Provider:    task.Provider,
@@ -322,7 +328,10 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 		Retry:       task.Retry,
 		Metadata:    make(map[string]any),
 	}
-	
+	if resolved.Label == "" {
+		resolved.Label = resolvedParent.Label
+	}
+
 	// Inherit from parent if not specified in child
 	if len(resolved.Inputs) == 0 {
 		resolved.Inputs = resolvedParent.Inputs
@@ -345,19 +354,15 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 	if resolved.Retry == 0 {
 		resolved.Retry = resolvedParent.Retry
 	}
-	
+
 	// Merge metadata
-	for k, v := range resolvedParent.Metadata {
-		resolved.Metadata[k] = v
-	}
-	for k, v := range task.Metadata {
-		resolved.Metadata[k] = v
-	}
-	
+	maps.Copy(resolved.Metadata, resolvedParent.Metadata)
+	maps.Copy(resolved.Metadata, task.Metadata)
+
 	t.logger.Debug("Task inheritance resolved", map[string]any{
 		"task":   task.Name,
 		"parent": task.Inherits,
 	})
-	
+
 	return resolved, nil
 }

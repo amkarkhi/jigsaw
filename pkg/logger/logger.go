@@ -17,16 +17,16 @@ type ZeroLogger struct {
 // New creates a new ZeroLogger instance
 func New(level string, pretty bool) types.Logger {
 	var output io.Writer = os.Stdout
-	
+
 	if pretty {
 		output = zerolog.ConsoleWriter{
 			Out:        os.Stdout,
 			TimeFormat: time.RFC3339,
 		}
 	}
-	
+
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	
+
 	logLevel := parseLevel(level)
 	logger := zerolog.New(output).
 		Level(logLevel).
@@ -34,8 +34,15 @@ func New(level string, pretty bool) types.Logger {
 		Timestamp().
 		Caller().
 		Logger()
-	
+
 	return &ZeroLogger{logger: logger}
+}
+
+// Debug logs debug message
+func (z *ZeroLogger) Trace(msg string, fields map[string]any) {
+	event := z.logger.Trace()
+	addFields(event, fields)
+	event.Msg(msg)
 }
 
 // Debug logs debug message

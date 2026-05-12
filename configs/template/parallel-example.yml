@@ -1,0 +1,107 @@
+# Reference YAML for the parallel execution model. See docs/parallel-execution.md
+# for the full design and authoring guidance.
+#
+# This file is documentation-only; it lives under configs/template so it
+# isn't picked up by the loader (which scans configs/{tasks,flows,...}).
+
+tasks:
+  - name: fetch_user
+    label: user
+    logic: fetch_user
+    outputs:
+      - name: user_id
+        type: string
+      - name: email
+        type: string
+
+  - name: fetch_profile
+    label: profile_data
+    logic: fetch_profile
+    inputs:
+      - name: user_id
+        from: user
+        type: string
+    outputs:
+      - name: profile
+        type: object
+
+  - name: score_profile
+    label: profile_score
+    logic: score_profile
+    inputs:
+      - name: profile
+        from: profile_data
+        type: object
+    outputs:
+      - name: score
+        type: int
+      - name: confidence
+        type: int
+
+  - name: fetch_activity
+    label: activity_data
+    logic: fetch_activity
+    inputs:
+      - name: user_id
+        from: user
+        type: string
+    outputs:
+      - name: activity
+        type: object
+
+  - name: score_activity
+    label: activity_score
+    logic: score_activity
+    inputs:
+      - name: activity
+        from: activity_data
+        type: object
+    outputs:
+      - name: score
+        type: int
+      - name: confidence
+        type: int
+
+  # Pulls each branch's labeled output back into a single record. The branch
+  # qualifiers (`profile.`, `activity.`) are required because both branches'
+  # terminal tasks publish under their own labels inside the parallel block.
+  - name: combine_scores
+    logic: combine_scores
+    inputs:
+      - name: profile_score
+        from: profile.profile_score
+        field: score
+        type: int
+      - name: profile_confidence
+        from: profile.profile_score
+        field: confidence
+        type: int
+      - name: activity_score
+        from: activity.activity_score
+        field: score
+        type: int
+      - name: activity_confidence
+        from: activity.activity_score
+        field: confidence
+        type: int
+    outputs:
+      - name: combined_score
+        type: int
+
+flows:
+  - name: enrich_user
+    description: Fetch a user, run profile/activity enrichment in parallel, then combine.
+    tasks:
+      - name: fetch_user
+      - parallel:
+          on_branch_failure: continue   # "continue" (default) | "cancel"
+          branches:
+            - label: profile
+              tasks:
+                - name: fetch_profile
+                - name: score_profile
+            - label: activity
+              tasks:
+                - name: fetch_activity
+                - name: score_activity
+      - name: combine_scores
