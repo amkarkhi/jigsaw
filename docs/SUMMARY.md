@@ -193,27 +193,25 @@ func (b *BaseProvider) connectDatabase(ctx context.Context) any {
 
 ### 3. Parallel Execution
 
-The parallel execution is currently **sequential**. Implement actual parallelism:
+**Implemented.** A flow can declare `parallel:` blocks with N labeled
+branches; each branch is a sequence of tasks (and may itself contain further
+parallel blocks). `pkg/engine/flow_executor.go` runs branches via
+`sync.WaitGroup` over goroutines that share a `context.WithCancel`-derived
+context. Each branch executes against a forked `ExecutionContext`
+(`pkg/context.Fork`), and results are merged back deterministically at join
+time.
 
-```go
-// In pkg/engine/flow_executor.go
-func (f *FlowExecutor) executeParallelTasks(...) error {
-    // TODO: Implement with goroutines and sync.WaitGroup
-    var wg sync.WaitGroup
-    errChan := make(chan error, len(tasks))
-    
-    for _, taskRef := range tasks {
-        wg.Add(1)
-        go func(tr types.TaskRef) {
-            defer wg.Done()
-            // Execute task...
-        }(taskRef)
-    }
-    
-    wg.Wait()
-    // Handle errors...
-}
-```
+Failure policy is per-block: `on_branch_failure: continue` (default) lets
+siblings run to completion; `on_branch_failure: cancel` cancels the shared
+context on first hard failure so siblings that respect `ctx.Context` abort.
+
+Outputs are routed across the join via the **label index**: a producer task
+declares `label:`, downstream consumers reference it via
+`from: [branch.]*label` and optionally `field: <output>`. The validator
+enforces reachability statically.
+
+See [parallel-execution.md](parallel-execution.md) for the full design and
+authoring best practices.
 
 ### 4. Advanced Features (Optional)
 

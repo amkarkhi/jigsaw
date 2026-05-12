@@ -422,7 +422,44 @@ func processJob(job Job) error {
 }
 ```
 
-### Pattern 3: CLI Tool with Workflows
+### Pattern 3: Parallel Branches
+```go
+// Build a flow with two concurrent branches that each run a small task
+// sequence, then a downstream task that reads each branch's labeled output
+// via `from: <branch>.<label>`. See docs/parallel-execution.md for the full
+// design.
+cfg.Tasks["produce"] = &types.Task{
+    Name:  "produce",
+    Label: "data",                                // flow-local logical name
+    Logic: "produce",
+    Outputs: []types.FieldDef{
+        {Name: "value", Type: "string"},
+    },
+}
+cfg.Tasks["collect"] = &types.Task{
+    Name: "collect",
+    Inputs: []types.FieldDef{
+        {Name: "left_value",  From: "L.data", Field: "value", Type: "string"},
+        {Name: "right_value", From: "R.data", Field: "value", Type: "string"},
+    },
+    Logic: "collect",
+}
+cfg.Flows["fanout"] = &types.Flow{
+    Name: "fanout",
+    Tasks: []types.TaskRef{
+        {Parallel: &types.ParallelBlock{
+            OnBranchFailure: "continue",          // "" | "continue" | "cancel"
+            Branches: []types.Branch{
+                {Label: "L", Tasks: []types.TaskRef{{Name: "produce"}}},
+                {Label: "R", Tasks: []types.TaskRef{{Name: "produce"}}},
+            },
+        }},
+        {Name: "collect"},
+    },
+}
+```
+
+### Pattern 4: CLI Tool with Workflows
 ```go
 // Use Jigsaw to power a CLI tool
 func main() {

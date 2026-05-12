@@ -413,20 +413,45 @@ fallback:
 
 ## ⚡ Parallel Execution
 
-Run independent tasks concurrently:
+Run independent sequences of tasks concurrently. Each `parallel:` block declares
+N labeled **branches**, each branch is a sequence of tasks, and the flow only
+continues after every branch has joined. See
+[docs/parallel-execution.md](docs/parallel-execution.md) for the full design.
 
 ```yaml
 flows:
-  - name: parallel_operations
+  - name: enrich_user
     tasks:
-      - name: parse_input
+      - name: fetch_user
 
       - parallel:
-          - cache_lookup
-          - metrics_increment
-          - audit_log
+          on_branch_failure: continue   # "continue" (default) | "cancel"
+          branches:
+            - label: profile
+              tasks:
+                - name: fetch_profile
+                - name: score_profile
+            - label: activity
+              tasks:
+                - name: fetch_activity
+                - name: score_activity
 
-      - name: process_data # waits for all parallel tasks
+      - name: combine_scores            # reads each branch via from: <branch>.<label>
+```
+
+Producer tasks expose their outputs under a flow-local `label`; downstream
+inputs reference that label (and optionally a specific output `field`) with
+`from:`:
+
+```yaml
+- name: combine_scores
+  inputs:
+    - name: profile_score
+      from: profile.profile_score   # branch "profile", label "profile_score"
+      field: score
+    - name: activity_score
+      from: activity.activity_score
+      field: score
 ```
 
 ---
