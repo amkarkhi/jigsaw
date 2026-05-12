@@ -174,6 +174,9 @@ func (m *TUI) renderFlows() string {
 		if i == m.cursor {
 			b.WriteString(fmt.Sprintf("    Description: %s\n", flow.Description))
 			b.WriteString(fmt.Sprintf("    Tasks: %d\n", len(flow.Tasks)))
+			if parallels := countParallelBlocks(flow.Tasks); parallels > 0 {
+				b.WriteString(fmt.Sprintf("    Parallel blocks: %d\n", parallels))
+			}
 			if flow.Inherits != "" {
 				b.WriteString(fmt.Sprintf("    Inherits: %s\n", flow.Inherits))
 			}
@@ -400,4 +403,20 @@ func (m *TUI) getMaxCursor() int {
 	default:
 		return 0
 	}
+}
+
+// countParallelBlocks reports how many parallel blocks appear anywhere in
+// the task tree (recursing into branches). Cheap, used for flow summaries.
+func countParallelBlocks(tasks []types.TaskRef) int {
+	count := 0
+	for _, t := range tasks {
+		if t.Parallel == nil {
+			continue
+		}
+		count++
+		for _, br := range t.Parallel.Branches {
+			count += countParallelBlocks(br.Tasks)
+		}
+	}
+	return count
 }

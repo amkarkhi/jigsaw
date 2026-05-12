@@ -28,15 +28,13 @@ flows:
     tasks:
       - name: parse_params
       
-      - parallel:
-          - name: cache_check
-          - name: query_builder
-      
+      - name: cache_check
+      - name: query_builder
+
       - name: search_execute
-      
-      - parallel:
-          - name: cache_save
-          - name: response_builder
+
+      - name: cache_save
+      - name: response_builder
     metadata:
       version: "1.0"
       parallel_enabled: true

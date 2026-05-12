@@ -66,8 +66,14 @@ flows:
             action: skip|replace
             task: replacement_task
       - parallel:
-          - name: task3
-          - name: task4
+          on_branch_failure: continue   # "continue" (default) | "cancel"
+          branches:
+            - label: branch_a
+              tasks:
+                - name: task3
+            - label: branch_b
+              tasks:
+                - name: task4
       - name: task5
     inherits: parent_flow  # optional
 ```
@@ -428,16 +434,29 @@ flows:
 
 ### Parallel Pattern
 
+A `parallel:` block declares N labeled **branches**, each a sequence of tasks.
+All branches run concurrently and the flow waits for every branch to join
+before continuing. See [parallel-execution.md](parallel-execution.md) for the
+full reference (label routing, `from:`/`field:`, failure policy, nesting).
+
 ```yaml
 flows:
   - name: parallel_flow
     tasks:
       - name: prepare
       - parallel:
-          - name: task_a
-          - name: task_b
-          - name: task_c
-      - name: aggregate
+          on_branch_failure: continue   # "continue" (default) | "cancel"
+          branches:
+            - label: a
+              tasks:
+                - name: task_a
+            - label: b
+              tasks:
+                - name: task_b
+            - label: c
+              tasks:
+                - name: task_c
+      - name: aggregate                 # reads each branch via from: <branch>.<label>
 ```
 
 ## 🐛 Debugging

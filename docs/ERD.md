@@ -35,9 +35,10 @@
 │ + name: string   │         │ + name: string   │
 │ + description    │         │ + description    │
 │ + inherits: str? │         │ + inherits: str? │
-│ + tasks: []str   │   *─────│ + inputs: []Inp  │
-│ + parallel: bool │    uses │ + outputs: []Out │
-│ + metadata: map  │─────────│ + provider: str? │
+│ + tasks: []TR    │   *─────│ + inputs: []Inp  │
+│ + metadata: map  │    uses │ + outputs: []Out │
+│                  │─────────│ + label: str?    │
+│                  │         │ + provider: str? │
 └────────┬─────────┘         │ + fallback: FB   │
          │                   │ + logic: string  │
          │ can inherit       │ + timeout: int   │
@@ -188,9 +189,15 @@ Defines a sequence of tasks to execute.
 - `name` (string): Unique flow identifier
 - `description` (string): Human-readable description
 - `inherits` (string?): Parent flow to inherit from
-- `tasks` ([]string | []TaskRef): Ordered list of tasks
-- `parallel` (bool): Whether to support parallel execution
+- `tasks` ([]TaskRef): Ordered list of task references; each is either a single task or a `parallel:` block
 - `metadata` (map): Additional configuration
+
+**Related entities:**
+- `TaskRef`: exactly one of `name` or `parallel` must be set.
+- `ParallelBlock { on_branch_failure: "continue"|"cancel", branches: []Branch }`.
+- `Branch { label: string, tasks: []TaskRef }` — branches run concurrently and may themselves contain parallel blocks (recursive).
+- `Task.label` (string?): flow-local logical name for the task's outputs.
+- `FieldDef.from` (string?): for inputs, a dotted path `[branch.]*label` selecting a producer; `field` (string?) picks one output field. See [parallel-execution.md](parallel-execution.md).
 
 **Relationships:**
 - 1 Flow → * Task (uses)

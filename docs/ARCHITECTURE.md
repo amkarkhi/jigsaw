@@ -108,7 +108,7 @@ A **Context** object that:
 2. Extract parameters (sub as primary flow selector, tag/headers for context)
 3. Flow Router maps sub → flow (direct mapping)
 4. Initialize Execution Context with tag and metadata
-5. Execute tasks sequentially (or parallel if configured)
+5. Execute the task list sequentially; any `parallel:` block runs its branches concurrently and joins before the next step
 6. Each task:
    - Check for override conditions (tag, headers, context keys)
    - Validates inputs
@@ -245,18 +245,32 @@ flows:
 
 ## Parallel Execution Support
 
-Tasks can be marked for parallel execution:
+A flow can fan out into N concurrent **branches**, each of which is itself a
+sequence of tasks. The flow continues only after every branch has joined.
+Failure policy is per-block: `continue` (default) lets siblings run to
+completion; `cancel` aborts in-flight siblings via context cancellation.
+
+Branch outputs are exposed to downstream tasks through a label-based
+addressing scheme — never silently merged by the engine. See
+[parallel-execution.md](parallel-execution.md) for the full design (schema,
+runtime model, label resolution, validation, authoring best practices).
+
 ```yaml
 flows:
   - name: parallel_search
     tasks:
       - name: parse_params
       - parallel:
-          - cache_check
-          - metrics_log
-          - audit_log
-      - search  # waits for all parallel tasks
-      - response
+          on_branch_failure: continue
+          branches:
+            - label: cache
+              tasks:
+                - name: cache_check
+            - label: audit
+              tasks:
+                - name: audit_log
+      - name: search       # downstream tasks join after every branch returns
+      - name: response
 ```
 
 ## Context Management
