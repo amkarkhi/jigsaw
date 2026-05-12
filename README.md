@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/jig.png" alt="Jigsaw" />
+</p>
+
 # 🧩 Jigsaw
 
 **A modular, configuration-driven task orchestration engine for Go**
