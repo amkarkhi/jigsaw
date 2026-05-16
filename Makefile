@@ -1,4 +1,4 @@
-.PHONY: build install test clean validate run-example run-server deps fmt lint
+.PHONY: build install test clean validate run-example run-server deps fmt lint web dashboard
 
 # Build the jigsaw CLI
 build:
@@ -78,6 +78,16 @@ list-providers:
 # List available endpoints
 list-endpoints:
 	@go run ./cmd/jigsaw list endpoints --config ./configs
+
+# Build the dashboard frontend (outputs to pkg/dashboard/dist/)
+web:
+	@echo "Building dashboard frontend..."
+	@cd web && npm install --silent && npm run build
+	@echo "✓ Frontend built into pkg/dashboard/dist/"
+
+# Launch the dashboard against ./configs
+dashboard:
+	@go run ./cmd/jigsaw dashboard --config ./configs --listen 127.0.0.1:3300
 
 # Test a flow
 test-flow:

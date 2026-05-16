@@ -47,6 +47,13 @@ using simple YAML configurations.`,
 	rootCmd.AddCommand(describeCmd())
 	rootCmd.AddCommand(testCmd())
 	rootCmd.AddCommand(uiCmd())
+	rootCmd.AddCommand(checkCmd())
+	rootCmd.AddCommand(fmtCmd())
+	rootCmd.AddCommand(dumpSymbolsCmd())
+	rootCmd.AddCommand(lspCmd())
+	rootCmd.AddCommand(dashboardCmd())
+	rootCmd.AddCommand(userCmd())
+	rootCmd.AddCommand(tokenCmd())
 	
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

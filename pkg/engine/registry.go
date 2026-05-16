@@ -11,13 +11,43 @@ import (
 // LogicHandler is a function that executes task logic
 type LogicHandler func(ctx *types.ExecutionContext, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error)
 
-// LogicHandlerInfo contains metadata about a registered logic handler
+// LogicHandlerInfo contains metadata about a registered logic handler.
+// InputSchema / OutputSchema are optional declarations of what the handler
+// expects and emits; when present they enable schema-level validation of
+// every task that references this handler.
 type LogicHandlerInfo struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	Version     string    `json:"version,omitempty"`
-	RegisteredAt time.Time `json:"registered_at"`
-	UsedBy      []string  `json:"used_by,omitempty"` // Tasks that use this logic
+	Name         string           `json:"name"`
+	Description  string           `json:"description,omitempty"`
+	Version      string           `json:"version,omitempty"`
+	RegisteredAt time.Time        `json:"registered_at"`
+	UsedBy       []string         `json:"used_by,omitempty"` // Tasks that use this logic
+	InputSchema  []types.FieldDef `json:"input_schema,omitempty"`
+	OutputSchema []types.FieldDef `json:"output_schema,omitempty"`
+}
+
+// RegisterOption customizes a logic handler registration.
+type RegisterOption func(*LogicHandlerInfo)
+
+// WithDescription attaches human-readable docs to a handler.
+func WithDescription(s string) RegisterOption {
+	return func(i *LogicHandlerInfo) { i.Description = s }
+}
+
+// WithVersion records the handler's semantic version.
+func WithVersion(s string) RegisterOption {
+	return func(i *LogicHandlerInfo) { i.Version = s }
+}
+
+// WithInputSchema declares the inputs the handler expects. Every task that
+// references this handler will be validated against this schema at config-load
+// time and by `jigsaw check`.
+func WithInputSchema(fields ...types.FieldDef) RegisterOption {
+	return func(i *LogicHandlerInfo) { i.InputSchema = fields }
+}
+
+// WithOutputSchema declares the outputs the handler emits.
+func WithOutputSchema(fields ...types.FieldDef) RegisterOption {
+	return func(i *LogicHandlerInfo) { i.OutputSchema = fields }
 }
 
 // LogicRegistry manages task logic handlers
