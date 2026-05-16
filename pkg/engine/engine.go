@@ -32,14 +32,24 @@ func New(config *types.Config, validator types.Validator, logger types.Logger) *
 	}
 }
 
-// RegisterLogic registers a custom logic handler
-func (e *Engine) RegisterLogic(name string, handler LogicHandler) error {
-	return e.logicRegistry.Register(name, handler)
+// RegisterLogic registers a custom logic handler. Optional RegisterOption
+// arguments attach metadata: description, version, input/output schemas.
+func (e *Engine) RegisterLogic(name string, handler LogicHandler, opts ...RegisterOption) error {
+	if len(opts) == 0 {
+		return e.logicRegistry.Register(name, handler)
+	}
+	info := &LogicHandlerInfo{Name: name}
+	for _, opt := range opts {
+		opt(info)
+	}
+	return e.logicRegistry.RegisterWithMetadata(name, handler, info)
 }
 
-// MustRegisterLogic registers a custom logic handler and panics on error
-func (e *Engine) MustRegisterLogic(name string, handler LogicHandler) {
-	e.logicRegistry.MustRegister(name, handler)
+// MustRegisterLogic registers a custom logic handler and panics on error.
+func (e *Engine) MustRegisterLogic(name string, handler LogicHandler, opts ...RegisterOption) {
+	if err := e.RegisterLogic(name, handler, opts...); err != nil {
+		panic(err)
+	}
 }
 
 // ListLogicHandlers returns all registered logic handler names

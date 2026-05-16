@@ -32,6 +32,11 @@ Thumbs.db
 bin/
 dist/
 build/
+# But keep the embedded dashboard build — Go go:embed needs it at build time.
+!pkg/dashboard/dist/
+
+# Frontend tooling
+web/node_modules/
 
 # Logs
 *.log

@@ -19,72 +19,72 @@ type Config struct {
 
 // Endpoint defines an HTTP route that maps to flows
 type Endpoint struct {
-	Name        string         `yaml:"name"`
-	Path        string         `yaml:"path"`
-	Method      string         `yaml:"method"`
-	Description string         `yaml:"description"`
-	Flows       []FlowMapping  `yaml:"flows"`
-	Metadata    map[string]any `yaml:"metadata,omitempty"`
+	Name        string         `yaml:"name" json:"name"`
+	Path        string         `yaml:"path" json:"path"`
+	Method      string         `yaml:"method" json:"method"`
+	Description string         `yaml:"description" json:"description,omitempty"`
+	Flows       []FlowMapping  `yaml:"flows" json:"flows"`
+	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // FlowMapping maps sub parameter to a specific flow
 type FlowMapping struct {
-	Sub      int    `yaml:"sub"`       // Direct sub -> flow mapping
-	FlowName string `yaml:"flow_name"` // Target flow name
+	Sub      int    `yaml:"sub" json:"sub"`
+	FlowName string `yaml:"flow_name" json:"flow_name"`
 }
 
 // Flow defines a sequence of tasks to execute
 type Flow struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description"`
-	Version     string         `yaml:"version,omitempty"`  // Semantic version (e.g., "1.0.0", "2.1.3")
-	Inherits    string         `yaml:"inherits,omitempty"` // Parent flow to inherit from
-	Tasks       []TaskRef      `yaml:"tasks"`              // Ordered list of tasks
-	Metadata    map[string]any `yaml:"metadata,omitempty"`
+	Name        string         `yaml:"name" json:"name"`
+	Description string         `yaml:"description" json:"description,omitempty"`
+	Version     string         `yaml:"version,omitempty" json:"version,omitempty"`
+	Inherits    string         `yaml:"inherits,omitempty" json:"inherits,omitempty"`
+	Tasks       []TaskRef      `yaml:"tasks" json:"tasks"`
+	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // TaskRef can be a simple task reference or a parallel block.
 // Exactly one of Name or Parallel must be set.
 type TaskRef struct {
-	Name      string         `yaml:"name,omitempty"`
-	Overrides []TaskOverride `yaml:"overrides,omitempty"`
-	Parallel  *ParallelBlock `yaml:"parallel,omitempty"`
+	Name      string         `yaml:"name,omitempty" json:"name,omitempty"`
+	Overrides []TaskOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
+	Parallel  *ParallelBlock `yaml:"parallel,omitempty" json:"parallel,omitempty"`
 }
 
 // ParallelBlock declares N branches to execute concurrently.
 type ParallelBlock struct {
-	OnBranchFailure string   `yaml:"on_branch_failure,omitempty"` // "continue" (default) | "cancel"
-	Branches        []Branch `yaml:"branches"`
+	OnBranchFailure string   `yaml:"on_branch_failure,omitempty" json:"on_branch_failure,omitempty"`
+	Branches        []Branch `yaml:"branches" json:"branches"`
 }
 
 // Branch is a labeled sequence of tasks executed inside a parallel block.
 type Branch struct {
-	Label string    `yaml:"label"`
-	Tasks []TaskRef `yaml:"tasks"`
+	Label string    `yaml:"label" json:"label"`
+	Tasks []TaskRef `yaml:"tasks" json:"tasks"`
 }
 
 // TaskOverride defines conditional task execution changes
 type TaskOverride struct {
-	Condition map[string]any `yaml:"condition"`      // e.g., {tag: "premium"}
-	Action    string         `yaml:"action"`         // skip, replace
-	Task      string         `yaml:"task,omitempty"` // Replacement task name
+	Condition map[string]any `yaml:"condition" json:"condition,omitempty"`
+	Action    string         `yaml:"action" json:"action"`
+	Task      string         `yaml:"task,omitempty" json:"task,omitempty"`
 }
 
 // Task defines a unit of work
 type Task struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description"`
-	Version     string         `yaml:"version,omitempty"` // Semantic version (e.g., "1.0.0", "2.1.3")
-	Label       string         `yaml:"label,omitempty"`   // Flow-local logical name for this task's outputs
-	Inherits    string         `yaml:"inherits,omitempty"`
-	Inputs      []FieldDef     `yaml:"inputs"`
-	Outputs     []FieldDef     `yaml:"outputs"`
-	Provider    string         `yaml:"provider,omitempty"`
-	Fallback    *Fallback      `yaml:"fallback,omitempty"`
-	Logic       string         `yaml:"logic"`
-	Timeout     int            `yaml:"timeout,omitempty"` // milliseconds
-	Retry       int            `yaml:"retry,omitempty"`
-	Metadata    map[string]any `yaml:"metadata,omitempty"`
+	Name        string         `yaml:"name" json:"name"`
+	Description string         `yaml:"description" json:"description,omitempty"`
+	Version     string         `yaml:"version,omitempty" json:"version,omitempty"`
+	Label       string         `yaml:"label,omitempty" json:"label,omitempty"`
+	Inherits    string         `yaml:"inherits,omitempty" json:"inherits,omitempty"`
+	Inputs      []FieldDef     `yaml:"inputs" json:"inputs"`
+	Outputs     []FieldDef     `yaml:"outputs" json:"outputs"`
+	Provider    string         `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Fallback    *Fallback      `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+	Logic       string         `yaml:"logic" json:"logic,omitempty"`
+	Timeout     int            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Retry       int            `yaml:"retry,omitempty" json:"retry,omitempty"`
+	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // FieldDef defines input/output field definition.
@@ -92,35 +92,35 @@ type Task struct {
 //   - From is a dotted path "[branch.]*label" identifying the producer.
 //   - Field picks a single field from the producer's outputs; defaults to Name.
 type FieldDef struct {
-	Name       string `yaml:"name"`
-	Type       string `yaml:"type"` // string, int, bool, object, array, any
-	Required   bool   `yaml:"required"`
-	Default    any    `yaml:"default,omitempty"`
-	Validation string `yaml:"validation,omitempty"`
-	From       string `yaml:"from,omitempty"`
-	Field      string `yaml:"field,omitempty"`
+	Name       string `yaml:"name" json:"name"`
+	Type       string `yaml:"type" json:"type"`
+	Required   bool   `yaml:"required" json:"required,omitempty"`
+	Default    any    `yaml:"default,omitempty" json:"default,omitempty"`
+	Validation string `yaml:"validation,omitempty" json:"validation,omitempty"`
+	From       string `yaml:"from,omitempty" json:"from,omitempty"`
+	Field      string `yaml:"field,omitempty" json:"field,omitempty"`
 }
 
 // Fallback defines error handling strategy
 type Fallback struct {
-	Strategy   string         `yaml:"strategy"` // abort, continue, switch_task, switch_provider
-	Message    string         `yaml:"message,omitempty"`
-	Defaults   map[string]any `yaml:"defaults,omitempty"`    // For continue strategy
-	TargetTask string         `yaml:"target_task,omitempty"` // For switch_task
-	Providers  []string       `yaml:"providers,omitempty"`   // For switch_provider
-	RetryCount int            `yaml:"retry_count,omitempty"`
-	RetryDelay int            `yaml:"retry_delay,omitempty"` // milliseconds
+	Strategy   string         `yaml:"strategy" json:"strategy"`
+	Message    string         `yaml:"message,omitempty" json:"message,omitempty"`
+	Defaults   map[string]any `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	TargetTask string         `yaml:"target_task,omitempty" json:"target_task,omitempty"`
+	Providers  []string       `yaml:"providers,omitempty" json:"providers,omitempty"`
+	RetryCount int            `yaml:"retry_count,omitempty" json:"retry_count,omitempty"`
+	RetryDelay int            `yaml:"retry_delay,omitempty" json:"retry_delay,omitempty"`
 }
 
 // Provider defines external service configuration
 type Provider struct {
-	Name     string         `yaml:"name"`
-	Type     string         `yaml:"type"`              // cache, database, search_engine, http, etc.
-	Version  string         `yaml:"version,omitempty"` // Provider version (e.g., "cache:1.0", "database:2.0")
-	Config   map[string]any `yaml:"config"`
-	InitMode string         `yaml:"init_mode"` // lazy, eager, pooled
-	PoolSize int            `yaml:"pool_size,omitempty"`
-	Metadata map[string]any `yaml:"metadata,omitempty"`
+	Name     string         `yaml:"name" json:"name"`
+	Type     string         `yaml:"type" json:"type"`
+	Version  string         `yaml:"version,omitempty" json:"version,omitempty"`
+	Config   map[string]any `yaml:"config" json:"config,omitempty"`
+	InitMode string         `yaml:"init_mode" json:"init_mode,omitempty"`
+	PoolSize int            `yaml:"pool_size,omitempty" json:"pool_size,omitempty"`
+	Metadata map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // =====================================================================
