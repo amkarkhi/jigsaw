@@ -15,13 +15,28 @@
 //     the structure as `parallel: {branches}` and we reject.
 //   - All nodes reachable from the source.
 //
-// Positions are persisted in flow.metadata.layout, which the engine ignores.
+// Forks and joins are expressed by the topology of real task nodes — a node
+// with out-degree > 1 is a fork point, and a node with in-degree > 1 is a
+// join point. There are no synthetic fork/join marker nodes.
+//
+// Positions are persisted in a sidecar (.jigsaw/layouts/<flow>.json), kept
+// out of the flow YAML so mouse-driven layout changes don't churn the config.
 
 import { Flow, ParallelBlock, TaskRef } from "./types";
 
 export interface CanvasNode {
   id: string;
   taskName: string;
+  // Per-placement label (TaskRef.label). Carries through decompile/compile
+  // so the same task can appear multiple times in a flow with distinct
+  // identities.
+  label?: string;
+  // Full chain of enclosing parallel-branch labels, outermost first. A node
+  // inside `parallel:[branch_1].parallel:[branch_3]` ends up with
+  // branchPath = ["branch_1", "branch_3"]. Compile reads the index that
+  // matches the current fork depth, so nested parallels round-trip with
+  // their user-authored labels preserved at every level.
+  branchPath?: string[];
   position: { x: number; y: number };
 }
 
@@ -148,8 +163,8 @@ function topoOrder(c: Canvas, adj: Adj): string[] {
 // ---------------------------------------------------------------------------
 
 interface DecompiledChain {
-  entryId: string | null;
-  exitId: string | null;
+  entryIds: string[];
+  exitIds: string[];
 }
 
 let __idCounter = 0;
@@ -163,68 +178,91 @@ function newId(prefix = "n"): string {
 export function decompile(flow: Flow, layout?: Record<string, { x: number; y: number }>): Canvas {
   __idCounter = 0;
   const canvas: Canvas = { nodes: [], edges: [] };
-  let prev: string | null = null;
+  let prevExits: string[] = [];
   for (const ref of flow.tasks) {
-    const r = emitRef(canvas, ref);
-    if (prev && r.entryId) canvas.edges.push({ id: newId("e"), source: prev, target: r.entryId });
-    if (r.exitId) prev = r.exitId;
+    const r = emitRef(canvas, ref, []);
+    for (const px of prevExits) {
+      for (const ce of r.entryIds) {
+        canvas.edges.push({ id: newId("e"), source: px, target: ce });
+      }
+    }
+    prevExits = r.exitIds;
   }
   // Always start from a deterministic auto-layout so missing layout entries
   // still look sensible, then override with persisted positions where we have them.
   autoLayout(canvas);
   if (layout) {
+    // We key layout by canvas node identity (taskName + label) so the same
+    // task placed multiple times in a flow gets distinct positions. Fall back
+    // to the bare taskName for entries written by the old single-key format
+    // so existing sidecars keep working.
     for (const n of canvas.nodes) {
-      const p = layout[n.taskName];
+      const p = layout[layoutKey(n)] ?? layout[n.taskName];
       if (p) n.position = p;
     }
   }
   return canvas;
 }
 
-function emitRef(canvas: Canvas, ref: TaskRef): DecompiledChain {
-  if (ref.name) {
-    const id = newId("t");
-    canvas.nodes.push({ id, taskName: ref.name, position: { x: 0, y: 0 } });
-    return { entryId: id, exitId: id };
-  }
-  if (ref.parallel) {
-    // Decompile branches and join with a virtual fan-in pattern: we create
-    // no synthetic nodes. The "fork" is the previous task; we just emit
-    // every branch's tasks and remember each branch tail. The caller will
-    // connect the fork's predecessor to each branch entry, and each branch
-    // tail to whatever comes next.
-    //
-    // Since this function operates inside a parent sequential context, the
-    // way to express a parallel block here is: emit each branch as a
-    // separate path from the fork, all converging on the next task.
-    //
-    // We can't truly model that without a synthetic fork/join node, so for
-    // decompile we add invisible "fork" and "join" nodes. These get
-    // suppressed in compile if the user hasn't broken the round-trip.
-    const forkId = newId("fork");
-    const joinId = newId("join");
-    canvas.nodes.push({ id: forkId, taskName: "·fork", position: { x: 0, y: 0 } });
-    canvas.nodes.push({ id: joinId, taskName: "·join", position: { x: 0, y: 0 } });
-    for (const branch of ref.parallel.branches) {
-      let bprev: string | null = forkId;
-      for (const bref of branch.tasks) {
-        const r = emitRef(canvas, bref);
-        if (bprev && r.entryId) canvas.edges.push({ id: newId("e"), source: bprev, target: r.entryId });
-        if (r.exitId) bprev = r.exitId;
-      }
-      if (bprev) canvas.edges.push({ id: newId("e"), source: bprev, target: joinId });
-    }
-    return { entryId: forkId, exitId: joinId };
-  }
-  return { entryId: null, exitId: null };
+// layoutKey returns the stable identity of a canvas node for layout
+// persistence. Labels distinguish multiple placements of the same task;
+// without a label the task name alone is the key.
+export function layoutKey(n: { taskName: string; label?: string }): string {
+  return n.label ? `${n.taskName}@${n.label}` : n.taskName;
 }
 
-// Topological-ish auto-layout: each node sits at row = longest path from
-// source, column = horizontal slot within row.
+function emitRef(canvas: Canvas, ref: TaskRef, path: string[]): DecompiledChain {
+  if (ref.name) {
+    const id = newId("t");
+    canvas.nodes.push({
+      id,
+      taskName: ref.name,
+      label: ref.label || undefined,
+      branchPath: path.length > 0 ? [...path] : undefined,
+      position: { x: 0, y: 0 },
+    });
+    return { entryIds: [id], exitIds: [id] };
+  }
+  if (ref.parallel) {
+    // Parallel blocks are represented purely by topology — the preceding
+    // task's edges fan out directly to each branch head, and each branch
+    // tail's edges fan in directly to whatever comes next. compile()
+    // recovers the parallel block from that shape. Nested parallels work
+    // the same way: a branch whose first task is itself a parallel just
+    // recurses, producing multiple entryIds for that branch.
+    const entryIds: string[] = [];
+    const exitIds: string[] = [];
+    ref.parallel.branches.forEach((branch, i) => {
+      const branchLabel = branch.label || `branch_${i + 1}`;
+      const childPath = [...path, branchLabel];
+      let bprev: string[] = [];
+      let branchHead: string[] | null = null;
+      for (const bref of branch.tasks) {
+        const r = emitRef(canvas, bref, childPath);
+        if (branchHead === null) branchHead = r.entryIds;
+        for (const px of bprev) {
+          for (const ce of r.entryIds) {
+            canvas.edges.push({ id: newId("e"), source: px, target: ce });
+          }
+        }
+        bprev = r.exitIds;
+      }
+      if (branchHead) entryIds.push(...branchHead);
+      exitIds.push(...bprev);
+    });
+    return { entryIds, exitIds };
+  }
+  return { entryIds: [], exitIds: [] };
+}
+
+// Layered DAG auto-layout: each node sits at row = longest path from source,
+// and its column is the barycenter of its predecessors' columns. This keeps a
+// branch in its own vertical lane instead of collapsing every row to the
+// canvas center. Within each row we resolve overlaps left-to-right and then
+// re-center the row so the whole graph stays balanced.
 export function autoLayout(canvas: Canvas) {
   if (canvas.nodes.length === 0) return;
   const adj = adjacency(canvas);
-  // Compute depth (longest path from any source).
   const depth = new Map<string, number>();
   for (const n of canvas.nodes) depth.set(n.id, 0);
   const order = topoOrder(canvas, adj);
@@ -234,20 +272,48 @@ export function autoLayout(canvas: Canvas) {
       depth.set(next, Math.max(depth.get(next) ?? 0, d + 1));
     }
   }
-  // Bucket by depth, spread horizontally.
   const buckets = new Map<number, string[]>();
   for (const [id, d] of depth) {
     if (!buckets.has(d)) buckets.set(d, []);
     buckets.get(d)!.push(id);
   }
+
   const ROW = 110;
   const COL = 220;
-  for (const [d, ids] of buckets) {
-    const totalWidth = (ids.length - 1) * COL;
-    ids.forEach((id, i) => {
-      const node = canvas.nodes.find((n) => n.id === id);
-      if (node) node.position = { x: i * COL - totalWidth / 2, y: d * ROW };
+  const pos = new Map<string, { x: number; y: number }>();
+  const depths = [...buckets.keys()].sort((a, b) => a - b);
+
+  for (const d of depths) {
+    const ids = buckets.get(d)!;
+    const desired = ids.map((id) => {
+      const preds = adj.in.get(id) ?? [];
+      if (preds.length === 0) return { id, x: 0 };
+      const xs = preds.map((p) => pos.get(p)?.x ?? 0);
+      return { id, x: xs.reduce((a, b) => a + b, 0) / xs.length };
     });
+    // Sort by desired x to minimize crossings, then enforce min spacing.
+    desired.sort((a, b) => a.x - b.x);
+    let lastX = -Infinity;
+    for (const it of desired) {
+      let x = it.x;
+      if (x < lastX + COL) x = lastX + COL;
+      pos.set(it.id, { x, y: d * ROW });
+      lastX = x;
+    }
+    // Re-center this row around 0 so the whole graph stays balanced —
+    // single-item rows already sit at their predecessor's column.
+    if (desired.length > 1) {
+      const xs = desired.map((it) => pos.get(it.id)!.x);
+      const offset = -(Math.min(...xs) + Math.max(...xs)) / 2;
+      for (const it of desired) {
+        const p = pos.get(it.id)!;
+        pos.set(it.id, { x: p.x + offset, y: p.y });
+      }
+    }
+  }
+  for (const n of canvas.nodes) {
+    const p = pos.get(n.id);
+    if (p) n.position = p;
   }
 }
 
@@ -296,13 +362,12 @@ export function compile(canvas: Canvas): CompileResult {
   const tasks: TaskRef[] = [];
   let cur: string | null = source;
   while (cur) {
-    const next: string | null = walk(cur, null, adj, topo, canvas, tasks);
+    const next: string | null = walk(cur, null, adj, topo, canvas, tasks, 0);
     cur = next;
   }
   const layout: Record<string, { x: number; y: number }> = {};
   for (const n of canvas.nodes) {
-    if (n.taskName.startsWith("·")) continue; // skip virtual fork/join
-    layout[n.taskName] = n.position;
+    layout[layoutKey(n)] = n.position;
   }
   return { ok: true, tasks, layout };
 }
@@ -317,25 +382,26 @@ function walk(
   topo: string[],
   canvas: Canvas,
   out: TaskRef[],
+  depth: number,
 ): string | null {
   if (cur === stop) return null;
   const node = canvas.nodes.find((n) => n.id === cur);
   if (!node) return null;
   const succ = adj.out.get(cur) ?? [];
 
-  // Suppress synthetic fork/join nodes from the decompile path.
-  const isVirtual = node.taskName.startsWith("·");
-
   if (succ.length === 0) {
-    if (!isVirtual) out.push({ name: node.taskName });
+    out.push(makeTaskRef(node));
     return null;
   }
   if (succ.length === 1) {
-    if (!isVirtual) out.push({ name: node.taskName });
+    out.push(makeTaskRef(node));
     return succ[0] === stop ? null : succ[0];
   }
-  // Fork. Emit the current task, then a parallel block.
-  if (!isVirtual) out.push({ name: node.taskName });
+  // Fork. The walker descends into each branch at depth+1 because each
+  // branch entry is one level deeper than the current fork in the
+  // user-authored branchPath chain. Emit the current task, then a parallel
+  // block.
+  out.push(makeTaskRef(node));
   const join = findJoin(adj, topo, succ);
   if (!join) {
     // Branches never converge: not representable.
@@ -348,15 +414,40 @@ function walk(
     const branchTasks: TaskRef[] = [];
     let cursor: string | null = s;
     while (cursor) {
-      cursor = walk(cursor, join, adj, topo, canvas, branchTasks);
+      cursor = walk(cursor, join, adj, topo, canvas, branchTasks, depth + 1);
     }
-    block.branches.push({ label: `branch_${i + 1}`, tasks: branchTasks });
+    // An empty branch (fork has a direct edge to join, skipping all
+    // tasks) isn't representable in Jigsaw's `parallel:` shape — the
+    // backend validator rejects it. Catch it here so the user sees the
+    // problem inline without having to try Save.
+    if (branchTasks.length === 0) {
+      throw new CompileException(
+        `parallel branch from "${node.taskName}" to "${
+          canvas.nodes.find((n) => n.id === join)?.taskName ?? "?"
+        }" has no tasks — every branch must contain at least one task`,
+      );
+    }
+    // Preserve the user-authored branch label at this fork's depth.
+    // branchPath holds the full chain from outermost to innermost; depth
+    // is the index of the *current* fork's label within that chain.
+    const firstNode = canvas.nodes.find((n) => n.id === s);
+    const branchLabel = firstNode?.branchPath?.[depth] || `branch_${i + 1}`;
+    block.branches.push({ label: branchLabel, tasks: branchTasks });
   });
   out.push({ parallel: block });
   return join === stop ? null : join;
 }
 
 class CompileException extends Error {}
+
+// Build a TaskRef from a canvas node, attaching the per-placement label
+// when set. The graph editor lets you label each placement independently
+// so the same task can appear multiple times in one flow.
+function makeTaskRef(node: CanvasNode): TaskRef {
+  const ref: TaskRef = { name: node.taskName };
+  if (node.label) ref.label = node.label;
+  return ref;
+}
 
 // Public wrapper that converts the exception path into a CompileResult.
 export function safeCompile(canvas: Canvas): CompileResult {

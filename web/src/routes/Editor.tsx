@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { api, Diagnostic, SaveResult, ServerInfo } from "../api/client";
+import { defineJigsawTheme, JIGSAW_THEME } from "../lib/monacoTheme";
 
 // Raw YAML editor with file picker, save (local) or bundle download (server).
 // Phase 6 milestone: forms-based graph editor is the next add; this is the
@@ -17,7 +18,10 @@ export default function EditorPage() {
 
   useEffect(() => {
     api.tree().then(setTree);
-    api.info().then(setInfo).catch(() => {});
+    api
+      .info()
+      .then(setInfo)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -46,10 +50,16 @@ export default function EditorPage() {
           setDiags(data.diagnostics);
         }
       } else {
-        setDiags(data.diagnostics ?? [{ Severity: "error", File: "", Message: "save failed" }]);
+        setDiags(
+          data.diagnostics ?? [
+            { Severity: "error", File: "", Message: "save failed" },
+          ],
+        );
       }
     } catch (e) {
-      setDiags([{ Severity: "error", File: "", Message: (e as Error).message }]);
+      setDiags([
+        { Severity: "error", File: "", Message: (e as Error).message },
+      ]);
     } finally {
       setBusy(false);
     }
@@ -90,19 +100,35 @@ export default function EditorPage() {
           Edit mode is off. Restart with <code>--edit</code> to enable saving.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 16, height: "calc(100vh - 140px)" }}>
-        <div style={{ overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "240px 1fr",
+          gap: 16,
+          height: "calc(100vh - 140px)",
+        }}
+      >
+        <div
+          style={{
+            overflow: "auto",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: 8,
+          }}
+        >
           {tree.length === 0 && <div className="empty">no files</div>}
           {Object.entries(groupTree(tree)).map(([group, files]) => (
             <div key={group} style={{ marginBottom: 12 }}>
-              <div style={{
-                fontSize: 10,
-                color: "var(--text-dim)",
-                textTransform: "uppercase",
-                letterSpacing: 0.5,
-                padding: "4px 8px",
-                fontWeight: 600,
-              }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "var(--text-dim)",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                  padding: "4px 8px",
+                  fontWeight: 600,
+                }}
+              >
                 {group} <span style={{ opacity: 0.6 }}>({files.length})</span>
               </div>
               {files.map((p) => (
@@ -147,12 +173,19 @@ export default function EditorPage() {
               {mode === "server" ? "Download bundle" : "Save"}
             </button>
           </div>
-          {flash && <div className="diag" style={{ borderLeftColor: "var(--accent)" }}>{flash}</div>}
+          {flash && (
+            <div className="diag" style={{ borderLeftColor: "var(--accent)" }}>
+              {flash}
+            </div>
+          )}
           {diags.length > 0 && (
             <div>
               {diags.map((d, i) => (
                 <div key={i} className={`diag ${d.Severity}`}>
-                  <span className="badge" style={{ marginLeft: 0, marginRight: 8 }}>
+                  <span
+                    className="badge"
+                    style={{ marginLeft: 0, marginRight: 8 }}
+                  >
                     {d.Severity}
                   </span>
                   {d.Message}
@@ -160,18 +193,27 @@ export default function EditorPage() {
               ))}
             </div>
           )}
-          <div style={{ flex: 1, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+          <div
+            style={{
+              flex: 1,
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              overflow: "hidden",
+            }}
+          >
             <Editor
               height="100%"
               language="yaml"
-              theme="vs-dark"
+              theme={JIGSAW_THEME}
+              beforeMount={defineJigsawTheme}
               value={draft}
               onChange={(v) => setDraft(v ?? "")}
               options={{
                 minimap: { enabled: false },
                 fontSize: 13,
                 tabSize: 2,
-                fontFamily: "ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace",
+                fontFamily:
+                  "ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace",
                 scrollBeyondLastLine: false,
               }}
             />

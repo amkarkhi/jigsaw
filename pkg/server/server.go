@@ -14,8 +14,8 @@ import (
 	"github.com/amkarkhi/jigsaw/pkg/router"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
-	
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 )
 
 // Server is the HTTP server
@@ -25,7 +25,7 @@ type Server struct {
 	providerRegistry *provider.Registry
 	configLoader     *config.Loader
 	validator        *validator.Validator
-	logger           types.Logger
+	logger           zerolog.Logger
 	config           *types.Config
 	ginEngine        *gin.Engine
 	httpServer       *http.Server
@@ -42,7 +42,7 @@ type Options struct {
 }
 
 // New creates a new server instance
-func New(cfg *types.Config, logger types.Logger, opts Options) *Server {
+func New(cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 	// Create validator
 	val := validator.New(logger)
 	
@@ -91,7 +91,7 @@ func New(cfg *types.Config, logger types.Logger, opts Options) *Server {
 
 // NewWithEngine creates a new server instance with a pre-configured engine
 // Use this when you want to register custom logic handlers
-func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *types.Config, logger types.Logger, opts Options) *Server {
+func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 	// Create router
 	rtr := router.New(cfg, logger)
 	
@@ -134,10 +134,7 @@ func (s *Server) GetEngine() *engine.Engine {
 
 // Start starts the HTTP server
 func (s *Server) Start(port int, configPath string) error {
-	s.logger.Info("Starting Jigsaw server", map[string]any{
-		"port":       port,
-		"hot_reload": s.hotReload,
-	})
+	s.logger.Info().Int("port", port).Bool("hot_reload", s.hotReload).Msg("Starting Jigsaw server")
 	
 	// Initialize eager providers
 	if err := s.providerRegistry.InitAllEager(context.Background()); err != nil {
@@ -147,11 +144,9 @@ func (s *Server) Start(port int, configPath string) error {
 	// Start hot-reload watcher if enabled
 	if s.hotReload {
 		if err := s.configLoader.Watch(configPath, s.onConfigChange); err != nil {
-			s.logger.Warn("Failed to start config watcher", map[string]any{
-				"error": err.Error(),
-			})
+			s.logger.Warn().Err(err).Msg("Failed to start config watcher")
 		} else {
-			s.logger.Info("Hot-reload enabled", nil)
+			s.logger.Info().Msg("Hot-reload enabled")
 		}
 	}
 	
@@ -161,16 +156,14 @@ func (s *Server) Start(port int, configPath string) error {
 		Handler: s.ginEngine,
 	}
 	
-	s.logger.Info("Server started successfully", map[string]any{
-		"address": s.httpServer.Addr,
-	})
+	s.logger.Info().Str("address", s.httpServer.Addr).Msg("Server started successfully")
 	
 	return s.httpServer.ListenAndServe()
 }
 
 // Stop stops the HTTP server
 func (s *Server) Stop(ctx context.Context) error {
-	s.logger.Info("Stopping server", nil)
+	s.logger.Info().Msg("Stopping server")
 	
 	// Stop config watcher
 	if s.hotReload {
@@ -179,7 +172,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	
 	// Close provider connections
 	if err := s.providerRegistry.Close(); err != nil {
-		s.logger.Error("Error closing providers", err, nil)
+		s.logger.Error().Err(err).Msg("Error closing providers")
 	}
 	
 	// Shutdown HTTP server
@@ -228,11 +221,7 @@ func (s *Server) registerEndpoint(endpoint *types.Endpoint) {
 		s.ginEngine.POST(endpoint.Path, handler)
 	}
 	
-	s.logger.Info("Endpoint registered", map[string]any{
-		"path":   endpoint.Path,
-		"method": endpoint.Method,
-		"name":   endpoint.Name,
-	})
+	s.logger.Info().Str("path", endpoint.Path).Str("method", endpoint.Method).Str("name", endpoint.Name).Msg("Endpoint registered")
 }
 
 // createEndpointHandler creates a Gin handler for an endpoint
@@ -373,13 +362,7 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 		
 		duration := time.Since(start)
 		
-		s.logger.Info("HTTP request", map[string]any{
-			"method":   c.Request.Method,
-			"path":     path,
-			"status":   c.Writer.Status(),
-			"duration": duration.Milliseconds(),
-			"ip":       c.ClientIP(),
-		})
+		s.logger.Info().Str("method", c.Request.Method).Str("path", path).Int("status", c.Writer.Status()).Int64("duration", duration.Milliseconds()).Str("ip", c.ClientIP()).Msg("HTTP request")
 	}
 }
 
@@ -388,11 +371,11 @@ func (s *Server) onConfigChange(newConfig *types.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	s.logger.Info("Reloading configuration", nil)
-	
+	s.logger.Info().Msg("Reloading configuration")
+
 	// Validate new configuration
 	if err := s.validator.ValidateConfig(newConfig); err != nil {
-		s.logger.Error("Invalid configuration, keeping old config", err, nil)
+		s.logger.Error().Err(err).Msg("Invalid configuration, keeping old config")
 		return
 	}
 	
@@ -411,17 +394,12 @@ func (s *Server) onConfigChange(newConfig *types.Config) {
 	// all registered logic handlers. The engine's config is updated internally.
 	// If you need to reload logic handlers, restart the server.
 	
-	s.logger.Info("Configuration reloaded successfully", map[string]any{
-		"tasks":     len(newConfig.Tasks),
-		"flows":     len(newConfig.Flows),
-		"providers": len(newConfig.Providers),
-		"endpoints": len(newConfig.Endpoints),
-	})
-	s.logger.Warn("Logic handlers are NOT reloaded (restart server to reload handlers)", nil)
-	
+	s.logger.Info().Int("tasks", len(newConfig.Tasks)).Int("flows", len(newConfig.Flows)).Int("providers", len(newConfig.Providers)).Int("endpoints", len(newConfig.Endpoints)).Msg("Configuration reloaded successfully")
+	s.logger.Warn().Msg("Logic handlers are NOT reloaded (restart server to reload handlers)")
+
 	// Note: Endpoints are not re-registered in Gin as that would require
 	// recreating the entire Gin engine. For endpoint changes, restart is required.
-	s.logger.Warn("Endpoint changes require server restart", nil)
+	s.logger.Warn().Msg("Endpoint changes require server restart")
 }
 
 // validateLogicHandlers validates all logic handlers

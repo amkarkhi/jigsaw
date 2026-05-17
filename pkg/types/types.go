@@ -3,6 +3,8 @@ package types
 import (
 	"context"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // =====================================================================
@@ -45,8 +47,15 @@ type Flow struct {
 
 // TaskRef can be a simple task reference or a parallel block.
 // Exactly one of Name or Parallel must be set.
+//
+// Label is a per-placement override. The Task definition itself does not
+// own a label — labels are a flow-scoped concept that lets the same task
+// be referenced multiple times in one flow without ambiguity. When set,
+// Label takes precedence over the older Task.Label (which is kept for
+// back-compat and acts as a default).
 type TaskRef struct {
 	Name      string         `yaml:"name,omitempty" json:"name,omitempty"`
+	Label     string         `yaml:"label,omitempty" json:"label,omitempty"`
 	Overrides []TaskOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 	Parallel  *ParallelBlock `yaml:"parallel,omitempty" json:"parallel,omitempty"`
 }
@@ -156,7 +165,7 @@ type ExecutionContext struct {
 	Metadata    map[string]any    // Additional runtime metadata
 	Versions    map[string]string // Version tracking: task_name -> version
 	Providers   ProviderRegistry  // Provider registry interface
-	Logger      Logger            // Logger interface
+	Logger      zerolog.Logger    // Structured logger (zerolog, by value)
 	Context     context.Context   // Go context for cancellation
 
 	// BranchPath identifies the parallel scope this context is executing inside.
@@ -415,16 +424,6 @@ type ProviderInstance interface {
 	IsConnected() bool
 	GetConnection() any
 	GetProvider() *Provider
-}
-
-// Logger defines logging interface
-type Logger interface {
-	Trace(msg string, fields map[string]any)
-	Debug(msg string, fields map[string]any)
-	Info(msg string, fields map[string]any)
-	Warn(msg string, fields map[string]any)
-	Error(msg string, err error, fields map[string]any)
-	With(fields map[string]any) Logger
 }
 
 // ConfigLoader loads and reloads configuration

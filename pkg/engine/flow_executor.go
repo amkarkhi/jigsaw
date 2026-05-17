@@ -10,17 +10,18 @@ import (
 
 	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // FlowExecutor executes flows.
 type FlowExecutor struct {
 	config       *types.Config
 	taskExecutor *TaskExecutor
-	logger       types.Logger
+	logger       zerolog.Logger
 }
 
 // NewFlowExecutor creates a new flow executor.
-func NewFlowExecutor(config *types.Config, logger types.Logger, logicRegistry *LogicRegistry) *FlowExecutor {
+func NewFlowExecutor(config *types.Config, logger zerolog.Logger, logicRegistry *LogicRegistry) *FlowExecutor {
 	return &FlowExecutor{
 		config:       config,
 		taskExecutor: NewTaskExecutor(config, logger, logicRegistry),
@@ -50,14 +51,11 @@ func (f *FlowExecutor) Execute(execCtx *types.ExecutionContext, flow *types.Flow
 		execCtx.Versions["flow"] = resolvedFlow.Version
 	}
 
-	logFields := map[string]any{
-		"flow":       flow.Name,
-		"task_count": len(resolvedFlow.Tasks),
-	}
+	debugEvt := f.logger.Debug().Str("flow", flow.Name).Int("task_count", len(resolvedFlow.Tasks))
 	if resolvedFlow.Version != "" {
-		logFields["version"] = resolvedFlow.Version
+		debugEvt = debugEvt.Str("version", resolvedFlow.Version)
 	}
-	f.logger.Debug("Executing flow tasks", logFields)
+	debugEvt.Msg("Executing flow tasks")
 
 	if err := f.executeTaskList(execCtx, resolvedFlow.Tasks, flowExec, true); err != nil {
 		flowExec.Status = types.StatusFailed
@@ -119,17 +117,11 @@ func (f *FlowExecutor) executeSingleTask(
 		if override.ShouldOverride {
 			switch override.Action {
 			case "skip":
-				f.logger.Info("Task skipped due to override", map[string]any{
-					"task":      taskRef.Name,
-					"condition": taskRef.Overrides,
-				})
+				f.logger.Info().Str("task", taskRef.Name).Interface("condition", taskRef.Overrides).Msg("Task skipped due to override")
 				return nil
 			case "replace":
 				actualTaskName = override.ReplacementTask
-				f.logger.Info("Task replaced due to override", map[string]any{
-					"original_task":    taskRef.Name,
-					"replacement_task": actualTaskName,
-				})
+				f.logger.Info().Str("original_task", taskRef.Name).Str("replacement_task", actualTaskName).Msg("Task replaced due to override")
 			}
 		}
 	}
@@ -139,15 +131,22 @@ func (f *FlowExecutor) executeSingleTask(
 		return fmt.Errorf("task '%s' not found", actualTaskName)
 	}
 
-	taskExec, err := f.taskExecutor.Execute(execCtx, task)
+	// TaskRef.Label is a per-placement override. Clone the task so the
+	// label change doesn't leak into other placements that share the same
+	// underlying Task.
+	effectiveTask := task
+	if taskRef.Label != "" {
+		clone := *task
+		clone.Label = taskRef.Label
+		effectiveTask = &clone
+	}
+
+	taskExec, err := f.taskExecutor.Execute(execCtx, effectiveTask)
 	flowExec.Tasks = append(flowExec.Tasks, taskExec)
 
 	if err != nil {
 		if task.Fallback != nil && task.Fallback.Strategy == "continue" {
-			f.logger.Warn("Task failed but continuing due to fallback strategy", map[string]any{
-				"task":  task.Name,
-				"error": err.Error(),
-			})
+			f.logger.Warn().Str("task", task.Name).Err(err).Msg("Task failed but continuing due to fallback strategy")
 			return nil
 		}
 		return err
@@ -176,10 +175,7 @@ func (f *FlowExecutor) executeParallel(
 		mode = "continue"
 	}
 
-	f.logger.Info("Executing parallel block", map[string]any{
-		"branches":          len(block.Branches),
-		"on_branch_failure": mode,
-	})
+	f.logger.Info().Int("branches", len(block.Branches)).Str("on_branch_failure", mode).Msg("Executing parallel block")
 
 	gctx, cancel := stdctx.WithCancel(execCtx.Context)
 	defer cancel()
@@ -284,9 +280,6 @@ func (f *FlowExecutor) resolveFlowInheritance(flow *types.Flow) (*types.Flow, er
 	maps.Copy(resolved.Metadata, resolvedParent.Metadata)
 	maps.Copy(resolved.Metadata, flow.Metadata)
 
-	f.logger.Debug("Flow inheritance resolved", map[string]any{
-		"flow":   flow.Name,
-		"parent": flow.Inherits,
-	})
+	f.logger.Debug().Str("flow", flow.Name).Str("parent", flow.Inherits).Msg("Flow inheritance resolved")
 	return resolved, nil
 }

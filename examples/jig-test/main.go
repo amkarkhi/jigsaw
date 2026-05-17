@@ -7,55 +7,53 @@ import (
 	"os/signal"
 	"syscall"
 
+	"time"
+
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/engine"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/server"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
+	"github.com/rs/zerolog"
 )
 
 func main() {
-	log := logger.New("debug", true)
-	log.Info("Starting Jigsaw Server Example", nil)
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
+		Level(zerolog.DebugLevel).With().Timestamp().Caller().Logger()
+	log.Info().Msg("Starting Jigsaw Server Example")
 	loader := config.NewLoader(log)
 	cfg, err := loader.Load("./configs")
 	if err != nil {
-		log.Error("Failed to load config", err, nil)
+		log.Error().Err(err).Msg("Failed to load config")
 		os.Exit(1)
 	}
 	val := validator.New(log)
 	if err := val.ValidateConfig(cfg); err != nil {
-		log.Error("Invalid configuration", err, nil)
+		log.Error().Err(err).Msg("Invalid configuration")
 		os.Exit(1)
 	}
 	eng := engine.New(cfg, val, log)
 	registerLogicHandlers(eng, log)
 
-	// ✅ Validate logic handlers before starting server
-	log.Info("Validating logic handlers", nil)
+	// Validate logic handlers before starting server
+	log.Info().Msg("Validating logic handlers")
 	validationErrors := eng.ValidateLogicHandlers()
 	if len(validationErrors) > 0 {
-		log.Error("Logic validation failed", nil, map[string]any{
-			"errors": validationErrors,
-		})
-		fmt.Println("\n❌ Missing Logic Handlers:")
+		log.Error().Interface("errors", validationErrors).Msg("Logic validation failed")
+		fmt.Println("\nMissing Logic Handlers:")
 		for _, err := range validationErrors {
 			fmt.Printf("   • %s (required by task: %s)\n", err.Logic, err.Task)
 		}
-		fmt.Println("\n💡 Register missing handlers in registerLogicHandlers() function")
+		fmt.Println("\nRegister missing handlers in registerLogicHandlers() function")
 		os.Exit(1)
 	}
-	log.Info("✅ All logic handlers validated successfully", map[string]any{
-		"total_handlers": len(eng.ListLogicHandlers()),
-	})
+	log.Info().Int("total_handlers", len(eng.ListLogicHandlers())).Msg("All logic handlers validated successfully")
 
 	providerReg := createProviderRegistry(cfg, log)
 	if err := providerReg.InitAllEager(context.Background()); err != nil {
-		log.Warn("Some providers failed to initialize", map[string]any{
-			"error": err.Error(),
-		})
+		log.Warn().Err(err).Msg("Some providers failed to initialize")
 	}
 	opts := server.Options{
 		Port:      8080,
@@ -87,31 +85,29 @@ func main() {
 
 	select {
 	case <-sigChan:
-		log.Info("Shutdown signal received", nil)
+		log.Info().Msg("Shutdown signal received")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*1000000000)
 		defer shutdownCancel()
 		if err := providerReg.Close(); err != nil {
-			log.Error("Error closing providers", err, nil)
+			log.Error().Err(err).Msg("Error closing providers")
 		}
 		if err := srv.Stop(shutdownCtx); err != nil {
-			log.Error("Error during shutdown", err, nil)
+			log.Error().Err(err).Msg("Error during shutdown")
 		}
-		log.Info("Server stopped gracefully", nil)
+		log.Info().Msg("Server stopped gracefully")
 	case err := <-errChan:
-		log.Error("Server error", err, nil)
+		log.Error().Err(err).Msg("Server error")
 		os.Exit(1)
 	}
 }
 
-func registerLogicHandlers(eng *engine.Engine, log types.Logger) {
-	log.Info("Registering logic handlers", nil)
+func registerLogicHandlers(eng *engine.Engine, log zerolog.Logger) {
+	log.Info().Msg("Registering logic handlers")
 
 	eng.MustRegisterLogic("parse_and_validate_params", func(ctx *types.ExecutionContext, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error) {
-		ctx.Logger.Info("Parsing and validating parameters", inputs)
+		ctx.Logger.Info().Interface("inputs", inputs).Msg("Parsing and validating parameters")
 		query, _ := inputs["query"].(string)
-		ctx.Logger.Info("Parsing parameters", map[string]any{
-			"query": query,
-		})
+		ctx.Logger.Info().Str("query", query).Msg("Parsing parameters")
 		if query == "" {
 			return nil, fmt.Errorf("query parameter is required")
 		}
@@ -121,11 +117,9 @@ func registerLogicHandlers(eng *engine.Engine, log types.Logger) {
 	})
 
 	eng.MustRegisterLogic("check_cache", func(ctx *types.ExecutionContext, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error) {
-		ctx.Logger.Info("Checking cache", inputs)
+		ctx.Logger.Info().Interface("inputs", inputs).Msg("Checking cache")
 		parsedQuery, _ := inputs["parsed_query"].(string)
-		ctx.Logger.Info("Cache check for query", map[string]any{
-			"parsed_query": parsedQuery,
-		})
+		ctx.Logger.Info().Str("parsed_query", parsedQuery).Msg("Cache check for query")
 		// Simulate cache miss for this example
 		return map[string]any{
 			"cache_hit":     false,
@@ -136,33 +130,25 @@ func registerLogicHandlers(eng *engine.Engine, log types.Logger) {
 	eng.MustRegisterLogic("build_response", func(ctx *types.ExecutionContext, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error) {
 		return inputs, nil
 	})
-	log.Info("✅ Logic handlers registered", map[string]any{"list": eng.ListLogicHandlers()})
+	log.Info().Interface("list", eng.ListLogicHandlers()).Msg("Logic handlers registered")
 }
 
 // createProviderRegistry creates and configures provider registry
-func createProviderRegistry(cfg *types.Config, log types.Logger) *provider.Registry {
-	log.Info("Creating provider registry", nil)
+func createProviderRegistry(cfg *types.Config, log zerolog.Logger) *provider.Registry {
+	log.Info().Msg("Creating provider registry")
 
 	providerReg := provider.NewRegistry(log)
 
 	// Register all configured providers
 	for _, prov := range cfg.Providers {
 		if err := providerReg.RegisterConfig(prov); err != nil {
-			log.Error("Failed to register provider", err, map[string]any{
-				"provider": prov.Name,
-			})
+			log.Error().Err(err).Str("provider", prov.Name).Msg("Failed to register provider")
 		} else {
-			log.Info("Provider registered", map[string]any{
-				"name": prov.Name,
-				"type": prov.Type,
-				"mode": prov.InitMode,
-			})
+			log.Info().Str("name", prov.Name).Str("type", prov.Type).Str("mode", prov.InitMode).Msg("Provider registered")
 		}
 	}
 
-	log.Info("✅ Provider registry created", map[string]any{
-		"providers": len(cfg.Providers),
-	})
+	log.Info().Int("providers", len(cfg.Providers)).Msg("Provider registry created")
 
 	return providerReg
 }

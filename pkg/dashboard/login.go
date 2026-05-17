@@ -81,7 +81,12 @@ func (d *Dashboard) handleLogout(w http.ResponseWriter, r *http.Request) {
 // Used by the SPA on load to decide whether to show the login screen.
 func (d *Dashboard) handleMe(w http.ResponseWriter, r *http.Request) {
 	if d.opts.Mode == ModeLocal {
-		writeJSON(w, map[string]any{"authenticated": true, "label": "local", "role": "admin"})
+		writeJSON(w, map[string]any{
+			"authenticated": true,
+			"label":         "local",
+			"role":          "admin",
+			"access":        AllResources,
+		})
 		return
 	}
 	if d.opts.Auth == nil {
@@ -93,10 +98,15 @@ func (d *Dashboard) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"authenticated": false})
 		return
 	}
+	access := id.Access
+	if access == nil {
+		access = []string{}
+	}
 	writeJSON(w, map[string]any{
 		"authenticated": true,
 		"label":         id.Label,
 		"role":          roleString(id.Role),
+		"access":        access,
 	})
 }
 

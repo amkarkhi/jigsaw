@@ -9,6 +9,7 @@ export function ConfirmModal({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   danger = false,
+  hideCancel = false,
   onConfirm,
   onCancel,
 }: {
@@ -17,6 +18,7 @@ export function ConfirmModal({
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  hideCancel?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -62,7 +64,7 @@ export function ConfirmModal({
         <h2 style={{ margin: "0 0 12px 0", fontSize: 16, fontWeight: 500 }}>{title}</h2>
         <div style={{ color: "var(--text-dim)", marginBottom: 20, fontSize: 13 }}>{message}</div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onCancel}>{cancelLabel}</button>
+          {!hideCancel && <button className="btn" onClick={onCancel}>{cancelLabel}</button>}
           <button
             className={`btn ${danger ? "btn-danger" : "btn-primary"}`}
             onClick={onConfirm}

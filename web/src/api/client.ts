@@ -39,6 +39,7 @@ export interface ServerInfo {
   config_path: string;
   server_name: string;
   service_name?: string;
+  playground?: boolean;
 }
 
 export interface Overview {
@@ -142,6 +143,40 @@ export interface LogicResponse {
   handlers: LogicHandler[];
 }
 
+export interface TaskTrace {
+  name: string;
+  label?: string;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  duration_ms: number;
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  error?: string;
+  provider?: string;
+  logic?: string;
+  fallback_used?: boolean;
+  skipped?: boolean;
+}
+
+export interface PlaygroundResult {
+  ok: boolean;
+  flow: string;
+  status: string;
+  tasks: TaskTrace[];
+  result?: unknown;
+  request_id?: string;
+  error?: string;
+}
+
+export interface UserRow {
+  username: string;
+  role: string;
+  email?: string;
+  access: string[];
+  created_at: string;
+}
+
 export interface Diagnostic {
   Severity: "error" | "warning";
   File: string;
@@ -156,10 +191,52 @@ export const api = {
   tasks: () => get<TaskSummary[]>("/api/tasks"),
   task: (name: string) => get<TaskDetail>(`/api/tasks?name=${encodeURIComponent(name)}`),
   taskUsage: (name: string) => get<string[]>(`/api/task-usage?name=${encodeURIComponent(name)}`),
-  me: () => get<{ authenticated: boolean; label?: string; role?: "admin" | "viewer" }>("/api/me"),
+  me: () => get<{ authenticated: boolean; label?: string; role?: "admin" | "viewer"; access?: string[] }>("/api/me"),
   login: (username: string, password: string) =>
     postJSON<{ ok: boolean; label?: string; role?: string }>("/api/login", { username, password }),
   logout: () => fetch("/api/logout", { method: "POST" }),
+  authInfo: () => get<{ password: boolean; gitlab: boolean }>("/api/auth-info"),
+  getGitSettings: () =>
+    get<{
+      base_url: string;
+      project: string;
+      default_branch: string;
+      author_name: string;
+      author_email: string;
+      pat_configured: boolean;
+      secret_key_set: boolean;
+    }>("/api/git/settings"),
+  saveGitSettings: (s: {
+    base_url: string;
+    project: string;
+    default_branch: string;
+    author_name: string;
+    author_email: string;
+    pat?: string;
+    clear_pat?: boolean;
+  }) => postJSON<{ ok: boolean }>("/api/git/settings", s),
+  listUsers: () =>
+    get<{ users: UserRow[]; resources: string[] }>("/api/users"),
+  createUser: (u: { username: string; password: string; role: string; email?: string; access?: string[] }) =>
+    postJSON<{ ok: boolean }>("/api/users", u),
+  updateUser: (username: string, patch: { role?: string; email?: string; access?: string[] }) =>
+    fetch(`/api/users/${encodeURIComponent(username)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then(async (r) => ({ status: r.status, data: (await r.json().catch(() => ({}))) as { ok?: boolean } })),
+  deleteUser: (username: string) =>
+    fetch(`/api/users/${encodeURIComponent(username)}`, { method: "DELETE" })
+      .then(async (r) => ({ status: r.status, data: (await r.json().catch(() => ({}))) as { ok?: boolean } })),
+  playgroundRun: (flow: string, inputs: Record<string, unknown>, headers?: Record<string, string>, sub?: number) =>
+    postJSON<PlaygroundResult>("/api/playground/run", { flow, inputs, headers, sub }),
+  playgroundRunYAML: (flowYAML: string, inputs: Record<string, unknown>, headers?: Record<string, string>, sub?: number) =>
+    postJSON<PlaygroundResult>("/api/playground/run", { flow_yaml: flowYAML, inputs, headers, sub }),
+  gitPush: (branch: string, commitMessage: string) =>
+    postJSON<{ ok: boolean; branch?: string; output?: string; browse_url?: string; error?: string }>(
+      "/api/git/push",
+      { branch, commit_message: commitMessage },
+    ),
   providers: () => get<ProviderSummary[]>("/api/providers"),
   provider: (name: string) => get<ProviderDetail>(`/api/providers?name=${encodeURIComponent(name)}`),
   endpoints: () => get<EndpointSummary[]>("/api/endpoints"),
@@ -169,6 +246,7 @@ export const api = {
   file: (path: string) => getText(`/api/file?path=${encodeURIComponent(path)}`),
   flowLocation: (name: string) => get<{ path: string }>(`/api/flow-location?name=${encodeURIComponent(name)}`),
   taskLocation: (name: string) => get<{ path: string }>(`/api/task-location?name=${encodeURIComponent(name)}`),
+  endpointLocation: (name: string) => get<{ path: string }>(`/api/endpoint-location?name=${encodeURIComponent(name)}`),
   loadLayout: (flow: string) => get<Record<string, { x: number; y: number }>>(`/api/layout?flow=${encodeURIComponent(flow)}`),
   saveLayout: (flow: string, layout: Record<string, { x: number; y: number }>) =>
     postJSON<{ ok: boolean }>(`/api/layout?flow=${encodeURIComponent(flow)}`, layout),

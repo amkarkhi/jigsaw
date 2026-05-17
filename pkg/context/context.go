@@ -7,6 +7,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 )
 
 // Fork creates a branch-local ExecutionContext from a parent. The branch may
@@ -19,10 +20,7 @@ import (
 func Fork(parent *types.ExecutionContext, branchLabel string, goCtx context.Context) *types.ExecutionContext {
 	branchPath := append(append([]string{}, parent.BranchPath...), branchLabel)
 
-	branchLogger := parent.Logger
-	if branchLogger != nil {
-		branchLogger = branchLogger.With(map[string]any{"branch": branchLabel})
-	}
+	branchLogger := parent.Logger.With().Str("branch", branchLabel).Logger()
 
 	return &types.ExecutionContext{
 		RequestID:   parent.RequestID,
@@ -128,12 +126,12 @@ func New(ctx context.Context, flowName string, sub int, params map[string]any, h
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
-	
+
 	// Extract tag from parameters if present
 	if tag, ok := params["tag"].(string); ok {
 		execCtx.Tag = tag
 	}
-	
+
 	return execCtx
 }
 
@@ -143,12 +141,12 @@ func WithProviders(execCtx *types.ExecutionContext, registry types.ProviderRegis
 	return execCtx
 }
 
-// WithLogger adds logger to context
-func WithLogger(execCtx *types.ExecutionContext, logger types.Logger) *types.ExecutionContext {
-	execCtx.Logger = logger.With(map[string]any{
-		"request_id": execCtx.RequestID,
-		"flow":       execCtx.FlowName,
-	})
+// WithLogger adds logger to context, enriching it with request_id and flow fields.
+func WithLogger(execCtx *types.ExecutionContext, logger zerolog.Logger) *types.ExecutionContext {
+	execCtx.Logger = logger.With().
+		Str("request_id", execCtx.RequestID).
+		Str("flow", execCtx.FlowName).
+		Logger()
 	return execCtx
 }
 
@@ -162,17 +160,17 @@ func CheckOverride(execCtx *types.ExecutionContext, overrides []types.TaskOverri
 	if len(overrides) == 0 {
 		return &OverrideResult{ShouldOverride: false}
 	}
-	
+
 	for _, override := range overrides {
 		if matchCondition(execCtx, override.Condition) {
 			return &OverrideResult{
-				ShouldOverride: true,
-				Action:         override.Action,
+				ShouldOverride:  true,
+				Action:          override.Action,
 				ReplacementTask: override.Task,
 			}
 		}
 	}
-	
+
 	return &OverrideResult{ShouldOverride: false}
 }
 
@@ -187,7 +185,7 @@ type OverrideResult struct {
 func matchCondition(execCtx *types.ExecutionContext, condition map[string]any) bool {
 	for key, expectedValue := range condition {
 		var actualValue any
-		
+
 		switch key {
 		case "tag":
 			actualValue = execCtx.Tag
@@ -205,11 +203,11 @@ func matchCondition(execCtx *types.ExecutionContext, condition map[string]any) b
 				return false
 			}
 		}
-		
+
 		if actualValue != expectedValue {
 			return false
 		}
 	}
-	
+
 	return true
 }

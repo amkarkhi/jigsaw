@@ -4,6 +4,9 @@
 
 export interface TaskRef {
   name?: string;
+  // Per-placement label. The same task can appear multiple times in a flow
+  // as long as each placement has a distinct label.
+  label?: string;
   parallel?: ParallelBlock;
   overrides?: unknown[];
 }

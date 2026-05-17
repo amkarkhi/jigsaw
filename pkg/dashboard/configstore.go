@@ -237,6 +237,26 @@ func (d *Dashboard) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-resource access check. In ModeServer we know the identity from
+	// the auth middleware; in ModeLocal there's no auth and every save is
+	// allowed (developer-on-laptop posture). Admins always pass.
+	if d.opts.Mode == ModeServer && d.opts.Auth != nil {
+		id, err := d.opts.Auth.Authenticate(r)
+		if err == nil && id.Role != RoleAdmin {
+			for rel := range payload.Files {
+				resource := resourceFromPath(rel)
+				if resource == "" {
+					http.Error(w, fmt.Sprintf("path %q is outside the editable resource tree", rel), http.StatusForbidden)
+					return
+				}
+				if !id.HasAccess(resource) {
+					http.Error(w, fmt.Sprintf("you don't have access to edit %s/", resource), http.StatusForbidden)
+					return
+				}
+			}
+		}
+	}
+
 	overlay, diags, err := d.validateAndStage(payload)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "unsafe path") {
@@ -304,7 +324,7 @@ func (d *Dashboard) handleBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="jigsaw-config-bundle.tar.gz"`)
 	if err := writeBundle(overlay, w); err != nil {
 		// Headers already flushed in most cases; log and bail.
-		d.opts.Logger.Error("bundle write", err, nil)
+		d.opts.Logger.Error().Err(err).Msg("bundle write")
 	}
 }
 

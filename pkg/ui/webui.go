@@ -10,6 +10,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 )
 
 //go:embed templates/*
@@ -21,11 +22,11 @@ type WebUI struct {
 	logicRegistry []string
 	logicInfo     map[string]map[string]any // Enhanced logic handler info
 	router        *gin.Engine
-	logger        types.Logger
+	logger        zerolog.Logger
 }
 
 // NewWebUI creates a new web UI instance
-func NewWebUI(config *types.Config, logicRegistry []string, logger types.Logger) *WebUI {
+func NewWebUI(config *types.Config, logicRegistry []string, logger zerolog.Logger) *WebUI {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -63,10 +64,7 @@ func (w *WebUI) setupRoutes() {
 
 // Start starts the web UI server
 func (w *WebUI) Start(port int) error {
-	w.logger.Info("Starting Web UI", map[string]any{
-		"port": port,
-		"url":  fmt.Sprintf("http://localhost:%d", port),
-	})
+	w.logger.Info().Int("port", port).Str("url", fmt.Sprintf("http://localhost:%d", port)).Msg("Starting Web UI")
 	return w.router.Run(fmt.Sprintf(":%d", port))
 }
 

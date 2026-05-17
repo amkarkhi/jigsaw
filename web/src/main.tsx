@@ -13,6 +13,9 @@ import Endpoints from "./routes/Endpoints";
 import Logic from "./routes/Logic";
 import Diagnostics from "./routes/Diagnostics";
 import EditorPage from "./routes/Editor";
+import Git from "./routes/Git";
+import Users from "./routes/Users";
+import Playground from "./routes/Playground";
 import Login from "./routes/Login";
 import { AuthGate } from "./components/AuthGate";
 import "./styles.css";
@@ -37,6 +40,9 @@ const router = createBrowserRouter([
       { path: "logic", Component: Logic },
       { path: "diagnostics", Component: Diagnostics },
       { path: "editor", Component: EditorPage },
+      { path: "git", Component: Git },
+      { path: "users", Component: Users },
+      { path: "playground", Component: Playground },
     ],
   },
 ]);

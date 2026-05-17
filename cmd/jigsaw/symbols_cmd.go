@@ -7,7 +7,6 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/engine"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/symbols"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
@@ -37,7 +36,7 @@ The standalone jigsaw binary has no user-registered logic, so the logic
 section will be empty when run via the CLI. Consumer binaries that embed
 jigsaw should call symbols.BuildFromEngine + symbols.Write directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New("error", false)
+			log := newLogger("error", false)
 
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)

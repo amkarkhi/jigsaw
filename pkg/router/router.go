@@ -4,16 +4,17 @@ import (
 	"fmt"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // Router handles flow routing based on parameters
 type Router struct {
 	config *types.Config
-	logger types.Logger
+	logger zerolog.Logger
 }
 
 // New creates a new router
-func New(config *types.Config, logger types.Logger) *Router {
+func New(config *types.Config, logger zerolog.Logger) *Router {
 	return &Router{
 		config: config,
 		logger: logger,
@@ -22,10 +23,7 @@ func New(config *types.Config, logger types.Logger) *Router {
 
 // Route selects a flow based on endpoint and sub parameter
 func (r *Router) Route(endpoint *types.Endpoint, sub int) (*types.Flow, error) {
-	r.logger.Debug("Routing request", map[string]any{
-		"endpoint": endpoint.Name,
-		"sub":      sub,
-	})
+	r.logger.Debug().Str("endpoint", endpoint.Name).Int("sub", sub).Msg("Routing request")
 	
 	// Find matching flow mapping
 	var flowName string
@@ -46,11 +44,7 @@ func (r *Router) Route(endpoint *types.Endpoint, sub int) (*types.Flow, error) {
 		return nil, fmt.Errorf("flow '%s' not found", flowName)
 	}
 	
-	r.logger.Info("Request routed to flow", map[string]any{
-		"endpoint": endpoint.Name,
-		"sub":      sub,
-		"flow":     flowName,
-	})
+	r.logger.Info().Str("endpoint", endpoint.Name).Int("sub", sub).Str("flow", flowName).Msg("Request routed to flow")
 	
 	return flow, nil
 }
@@ -58,5 +52,5 @@ func (r *Router) Route(endpoint *types.Endpoint, sub int) (*types.Flow, error) {
 // UpdateConfig updates the router configuration
 func (r *Router) UpdateConfig(config *types.Config) {
 	r.config = config
-	r.logger.Info("Router configuration updated", nil)
+	r.logger.Info().Msg("Router configuration updated")
 }

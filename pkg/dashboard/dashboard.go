@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // Mode controls how the dashboard treats writes.
@@ -40,6 +40,30 @@ const (
 type Identity struct {
 	Label string
 	Role  Role
+	// Access lists the resource types this identity may modify, e.g.
+	// "flows", "tasks", "providers", "endpoints". Admins implicitly have
+	// access to every resource regardless of this list. Viewers have no
+	// edit access — Access is ignored for them.
+	Access []string
+}
+
+// AllResources is the canonical resource-type catalogue used by the
+// per-user access list. Admin identities implicitly hold all of these.
+var AllResources = []string{"flows", "tasks", "providers", "endpoints"}
+
+// HasAccess reports whether the identity may modify the given resource type.
+// Admins always have access; viewers never do; editor-style identities have
+// access only to the resources explicitly listed in Access.
+func (i Identity) HasAccess(resource string) bool {
+	if i.Role == RoleAdmin {
+		return true
+	}
+	for _, a := range i.Access {
+		if a == resource {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthProvider lets the consumer plug in their own auth. Returning a non-nil
@@ -68,8 +92,13 @@ type Options struct {
 	// Auth is required in ModeServer. Nil in ModeLocal.
 	Auth AuthProvider
 
+	// GitLabOAuth, when fully populated, enables GitLab SSO as an
+	// alternative to username+password login. Requires Auth to be a
+	// *FileAuth (the bundled provider). Leave nil/empty to disable.
+	GitLabOAuth *GitLabOAuthConfig
+
 	// Logger receives operational logs (start, denied requests).
-	Logger types.Logger
+	Logger zerolog.Logger
 
 	// Edit enables mutating endpoints. Phase 5 is read-only by default.
 	Edit bool
@@ -77,6 +106,12 @@ type Options struct {
 	// ServiceName, if set, is shown in the dashboard footer instead of the
 	// full config path. Use this when ConfigPath is long or sensitive.
 	ServiceName string
+
+	// Playground enables the in-browser flow playground (page + API). The
+	// playground executes flows against user-supplied inputs in a sandbox,
+	// which can be surprising in production deployments — it's off by
+	// default and must be explicitly enabled.
+	Playground bool
 }
 
 // Dashboard wires the HTTP handler. Use New() to construct.
@@ -95,12 +130,9 @@ func New(opts Options) (*Dashboard, error) {
 	if opts.ConfigPath == "" {
 		return degradedDashboard(opts, "ConfigPath is required"), fmt.Errorf("ConfigPath is required")
 	}
-	if opts.Logger == nil {
-		return degradedDashboard(opts, "Logger is required"), fmt.Errorf("Logger is required")
-	}
 
 	if opts.Mode == ModeServer && opts.Auth == nil {
-		opts.Logger.Error("dashboard: ModeServer requires Auth", nil, nil)
+		opts.Logger.Error().Msg("dashboard: ModeServer requires Auth")
 		return degradedDashboard(opts, "ModeServer requires Auth to be configured"), fmt.Errorf(
 			"ModeServer requires Auth to be configured",
 		)
@@ -156,11 +188,7 @@ func (d *Dashboard) ListenAndServe(ctx context.Context) error {
 		Handler:           d.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	d.opts.Logger.Info("dashboard.start", map[string]any{
-		"listen": d.opts.Listen,
-		"mode":   d.opts.Mode.String(),
-		"edit":   d.opts.Edit,
-	})
+	d.opts.Logger.Info().Str("listen", d.opts.Listen).Str("mode", d.opts.Mode.String()).Bool("edit", d.opts.Edit).Msg("dashboard.start")
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	select {

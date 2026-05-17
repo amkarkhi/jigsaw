@@ -5,7 +5,6 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/engine"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/ui"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,7 +33,7 @@ func tuiCmd() *cobra.Command {
 		Long:  "Launch an interactive terminal user interface to browse and manage configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Create logger
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 
 			// Load configuration
 			loader := config.NewLoader(log)
@@ -77,7 +76,7 @@ func webCmd() *cobra.Command {
 		Long:  "Launch a web-based user interface to browse and manage configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Create logger
-			log := logger.New(logLevel, pretty)
+			log := newLogger(logLevel, pretty)
 
 			// Load configuration
 			loader := config.NewLoader(log)

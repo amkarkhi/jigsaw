@@ -2,11 +2,13 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api, ServerInfo } from "./api/client";
 import type { CurrentUser } from "./components/AuthGate";
+import { useAlertDialog } from "./components/useDialog";
 
 // Trigger a tar-bundle download of the entire config tree. Useful in server
 // mode (download → extract → commit → ship), and also handy as a backup
-// snapshot in local mode.
-async function downloadBundle() {
+// snapshot in local mode. Failures are surfaced via the in-app alert dialog
+// rather than browser alert() so the UI stays theme-consistent.
+async function downloadBundle(onFail: (msg: string) => void) {
   const res = await fetch("/api/bundle", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -17,7 +19,7 @@ async function downloadBundle() {
     const msg =
       (data && (data.diagnostics?.[0]?.Message || data.error)) ||
       `download failed (${res.status})`;
-    alert(msg); // eslint-disable-line no-alert
+    onFail(msg);
     return;
   }
   const blob = await res.blob();
@@ -35,6 +37,7 @@ async function downloadBundle() {
 // (data-router style) so useBlocker works for the unsaved-changes guard.
 export default function App({ user }: { user?: CurrentUser }) {
   const [info, setInfo] = useState<ServerInfo | null>(null);
+  const { alert, ui: alertUI } = useAlertDialog();
 
   useEffect(() => {
     api.info().then(setInfo).catch(() => setInfo(null));
@@ -56,13 +59,16 @@ export default function App({ user }: { user?: CurrentUser }) {
           <NavLink to="/logic">Logic registry</NavLink>
           <NavLink to="/diagnostics">Diagnostics</NavLink>
           <NavLink to="/editor">Editor</NavLink>
+          {info?.playground && <NavLink to="/playground">Playground</NavLink>}
+          <NavLink to="/git">GitLab</NavLink>
+          {user?.role === "admin" && <NavLink to="/users">Users</NavLink>}
         </nav>
         {info?.edit && (
           <div style={{ padding: "0 24px" }}>
             <button
               className="btn"
               style={{ width: "100%" }}
-              onClick={downloadBundle}
+              onClick={() => downloadBundle((msg) => alert({ tone: "error", title: "Download failed", message: msg }))}
               title="Download the full config tree as a tar.gz"
             >
               ⬇ Download bundle
@@ -112,6 +118,7 @@ export default function App({ user }: { user?: CurrentUser }) {
       </aside>
       <main className="main">
         <Outlet />
+        {alertUI}
       </main>
     </div>
   );

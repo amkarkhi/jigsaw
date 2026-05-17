@@ -349,85 +349,13 @@ pre.json {
   cursor: pointer;
 }
 
-/* Monaco suggest widget — the autocomplete popup Ctrl-Space brings up.
-   Monaco's vs-dark theme normally handles this, but our global CSS
-   variables can leak into the inner spans. The selectors below cover
-   every text-bearing child of the row so contrast is guaranteed. */
-.monaco-editor .suggest-widget,
-.monaco-editor .suggest-widget .monaco-list,
-.monaco-editor .suggest-widget .monaco-list-rows {
-  background: #1e1e1e !important;
-  border: 0 !important;
-}
-.monaco-editor .suggest-widget {
-  border: 1px solid var(--border-strong) !important;
-  box-shadow: 0 4px 16px #000a !important;
-}
-
-/* Every text element inside a row. */
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row,
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row * {
-  color: #d4d4d4 !important;
-}
-
-/* Type / signature (right-aligned, dimmer). */
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .type-label,
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .qualifier {
-  color: #9aa1ab !important;
-}
-
-/* Highlighted match (e.g. the substring being typed). */
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
-  color: #7cf0c7 !important;
-  font-weight: 600 !important;
-}
-
-/* Focused row (Up/Down highlight). */
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused,
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused * {
-  background: var(--accent-dim) !important;
-  color: #ffffff !important;
-}
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused .monaco-highlighted-label .highlight {
-  color: #fff79a !important;
-}
-
-/* Hover row. */
-.monaco-editor .suggest-widget .monaco-list .monaco-list-row:hover {
-  background: #2a2d2e !important;
-}
-
-/* Right-hand details flyout. */
-.monaco-editor .suggest-widget .details,
-.monaco-editor .suggest-widget .details * {
-  background: #1e1e1e !important;
-  color: #d4d4d4 !important;
-}
-.monaco-editor .suggest-widget .details {
-  border: 1px solid var(--border-strong) !important;
-}
-
-/* Hover / parameter hints. */
-.monaco-editor .monaco-hover,
-.monaco-editor .monaco-hover *,
-.monaco-editor .parameter-hints-widget,
-.monaco-editor .parameter-hints-widget * {
-  background: #1e1e1e !important;
-  color: #d4d4d4 !important;
-}
-.monaco-editor .monaco-hover,
-.monaco-editor .parameter-hints-widget {
-  border: 1px solid var(--border-strong) !important;
-}
+/* Monaco's own theme system handles the suggest-widget / hover / quick-input
+   colors — see src/lib/monacoTheme.ts. Don't add CSS overrides here; they
+   fight the theme and leave half-styled elements behind. */
 
 .gnode.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-dim);
-}
-
-.gnode.parallel {
-  background: #1a1f2a;
-  border-color: #3b4a5e;
 }
 
 .gnode.branch {
@@ -485,6 +413,12 @@ pre.json {
   background: rgba(240, 201, 119, 0.12);
   color: var(--warn);
   border: 1px solid rgba(240, 201, 119, 0.3);
+}
+
+.chip.branch {
+  background: rgba(160, 124, 240, 0.14);
+  color: #b69cf2;
+  border: 1px solid rgba(160, 124, 240, 0.35);
 }
 
 .gnode.node-error {

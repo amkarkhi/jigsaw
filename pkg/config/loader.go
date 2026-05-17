@@ -8,6 +8,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/fsnotify/fsnotify"
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,13 +16,13 @@ import (
 type Loader struct {
 	configPath string
 	watcher    *fsnotify.Watcher
-	logger     types.Logger
+	logger     zerolog.Logger
 	mu         sync.RWMutex
 	stopChan   chan struct{}
 }
 
 // NewLoader creates a new configuration loader
-func NewLoader(logger types.Logger) *Loader {
+func NewLoader(logger zerolog.Logger) *Loader {
 	return &Loader{
 		logger:   logger,
 		stopChan: make(chan struct{}),
@@ -34,9 +35,7 @@ func (l *Loader) Load(configPath string) (*types.Config, error) {
 	l.configPath = configPath
 	l.mu.Unlock()
 	
-	l.logger.Info("Loading configuration", map[string]any{
-		"path": configPath,
-	})
+	l.logger.Info().Str("path", configPath).Msg("Loading configuration")
 	
 	config := &types.Config{
 		Tasks:     make(map[string]*types.Task),
@@ -69,12 +68,12 @@ func (l *Loader) Load(configPath string) (*types.Config, error) {
 		return nil, fmt.Errorf("failed to load endpoints: %w", err)
 	}
 	
-	l.logger.Info("Configuration loaded successfully", map[string]any{
-		"tasks":     len(config.Tasks),
-		"flows":     len(config.Flows),
-		"providers": len(config.Providers),
-		"endpoints": len(config.Endpoints),
-	})
+	l.logger.Info().
+		Int("tasks", len(config.Tasks)).
+		Int("flows", len(config.Flows)).
+		Int("providers", len(config.Providers)).
+		Int("endpoints", len(config.Endpoints)).
+		Msg("Configuration loaded successfully")
 	
 	return config, nil
 }
@@ -97,14 +96,9 @@ func (l *Loader) Watch(configPath string, onChange func(*types.Config)) error {
 	
 	for _, dir := range dirs {
 		if err := l.watcher.Add(dir); err != nil {
-			l.logger.Warn("Failed to watch directory", map[string]any{
-				"dir":   dir,
-				"error": err.Error(),
-			})
+			l.logger.Warn().Str("dir", dir).Err(err).Msg("Failed to watch directory")
 		} else {
-			l.logger.Info("Watching directory for changes", map[string]any{
-				"dir": dir,
-			})
+			l.logger.Info().Str("dir", dir).Msg("Watching directory for changes")
 		}
 	}
 	
@@ -123,10 +117,7 @@ func (l *Loader) watchLoop(onChange func(*types.Config)) {
 			}
 			
 			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove) != 0 {
-				l.logger.Info("Configuration file changed", map[string]any{
-					"file": event.Name,
-					"op":   event.Op.String(),
-				})
+				l.logger.Info().Str("file", event.Name).Str("op", event.Op.String()).Msg("Configuration file changed")
 				
 				// Reload configuration
 				l.mu.RLock()
@@ -135,11 +126,11 @@ func (l *Loader) watchLoop(onChange func(*types.Config)) {
 				
 				config, err := l.Load(configPath)
 				if err != nil {
-					l.logger.Error("Failed to reload configuration", err, nil)
+					l.logger.Error().Err(err).Msg("Failed to reload configuration")
 					continue
 				}
-				
-				l.logger.Info("Configuration reloaded successfully", nil)
+
+				l.logger.Info().Msg("Configuration reloaded successfully")
 				onChange(config)
 			}
 			
@@ -147,7 +138,7 @@ func (l *Loader) watchLoop(onChange func(*types.Config)) {
 			if !ok {
 				return
 			}
-			l.logger.Error("Watcher error", err, nil)
+			l.logger.Error().Err(err).Msg("Watcher error")
 			
 		case <-l.stopChan:
 			return
@@ -167,7 +158,7 @@ func (l *Loader) StopWatch() error {
 // loadTasks loads all task configurations
 func (l *Loader) loadTasks(tasksPath string, config *types.Config) error {
 	if _, err := os.Stat(tasksPath); os.IsNotExist(err) {
-		l.logger.Warn("Tasks directory does not exist", map[string]any{"path": tasksPath})
+		l.logger.Warn().Str("path", tasksPath).Msg("Tasks directory does not exist")
 		return nil
 	}
 	
@@ -196,10 +187,7 @@ func (l *Loader) loadTasks(tasksPath string, config *types.Config) error {
 		for _, task := range taskFile.Tasks {
 			taskCopy := task
 			config.Tasks[task.Name] = &taskCopy
-			l.logger.Debug("Task loaded", map[string]any{
-				"task": task.Name,
-				"file": path,
-			})
+			l.logger.Debug().Str("task", task.Name).Str("file", path).Msg("Task loaded")
 		}
 		
 		return nil
@@ -209,7 +197,7 @@ func (l *Loader) loadTasks(tasksPath string, config *types.Config) error {
 // loadFlows loads all flow configurations
 func (l *Loader) loadFlows(flowsPath string, config *types.Config) error {
 	if _, err := os.Stat(flowsPath); os.IsNotExist(err) {
-		l.logger.Warn("Flows directory does not exist", map[string]any{"path": flowsPath})
+		l.logger.Warn().Str("path", flowsPath).Msg("Flows directory does not exist")
 		return nil
 	}
 	
@@ -238,10 +226,7 @@ func (l *Loader) loadFlows(flowsPath string, config *types.Config) error {
 		for _, flow := range flowFile.Flows {
 			flowCopy := flow
 			config.Flows[flow.Name] = &flowCopy
-			l.logger.Debug("Flow loaded", map[string]any{
-				"flow": flow.Name,
-				"file": path,
-			})
+			l.logger.Debug().Str("flow", flow.Name).Str("file", path).Msg("Flow loaded")
 		}
 		
 		return nil
@@ -251,7 +236,7 @@ func (l *Loader) loadFlows(flowsPath string, config *types.Config) error {
 // loadProviders loads all provider configurations
 func (l *Loader) loadProviders(providersPath string, config *types.Config) error {
 	if _, err := os.Stat(providersPath); os.IsNotExist(err) {
-		l.logger.Warn("Providers directory does not exist", map[string]any{"path": providersPath})
+		l.logger.Warn().Str("path", providersPath).Msg("Providers directory does not exist")
 		return nil
 	}
 	
@@ -280,10 +265,7 @@ func (l *Loader) loadProviders(providersPath string, config *types.Config) error
 		for _, provider := range providerFile.Providers {
 			providerCopy := provider
 			config.Providers[provider.Name] = &providerCopy
-			l.logger.Debug("Provider loaded", map[string]any{
-				"provider": provider.Name,
-				"file":     path,
-			})
+			l.logger.Debug().Str("provider", provider.Name).Str("file", path).Msg("Provider loaded")
 		}
 		
 		return nil
@@ -293,7 +275,7 @@ func (l *Loader) loadProviders(providersPath string, config *types.Config) error
 // loadEndpoints loads all endpoint configurations
 func (l *Loader) loadEndpoints(endpointsPath string, config *types.Config) error {
 	if _, err := os.Stat(endpointsPath); os.IsNotExist(err) {
-		l.logger.Warn("Endpoints directory does not exist", map[string]any{"path": endpointsPath})
+		l.logger.Warn().Str("path", endpointsPath).Msg("Endpoints directory does not exist")
 		return nil
 	}
 	
@@ -322,11 +304,7 @@ func (l *Loader) loadEndpoints(endpointsPath string, config *types.Config) error
 		for _, endpoint := range endpointFile.Endpoints {
 			endpointCopy := endpoint
 			config.Endpoints[endpoint.Name] = &endpointCopy
-			l.logger.Debug("Endpoint loaded", map[string]any{
-				"endpoint": endpoint.Name,
-				"path":     endpoint.Path,
-				"file":     path,
-			})
+			l.logger.Debug().Str("endpoint", endpoint.Name).Str("path", endpoint.Path).Str("file", path).Msg("Endpoint loaded")
 		}
 		
 		return nil

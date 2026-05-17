@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/amkarkhi/jigsaw/pkg/types"
 	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
+	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // Engine is the main execution engine for flows and tasks
@@ -14,12 +15,12 @@ type Engine struct {
 	config        *types.Config
 	executor      *FlowExecutor
 	validator     types.Validator
-	logger        types.Logger
+	logger        zerolog.Logger
 	logicRegistry *LogicRegistry
 }
 
 // New creates a new engine instance
-func New(config *types.Config, validator types.Validator, logger types.Logger) *Engine {
+func New(config *types.Config, validator types.Validator, logger zerolog.Logger) *Engine {
 	logicRegistry := NewLogicRegistry()
 	executor := NewFlowExecutor(config, logger, logicRegistry)
 	
@@ -92,12 +93,7 @@ func (e *Engine) ExecuteFlow(ctx context.Context, flowName string, sub int, para
 	execCtx = jigsawctx.WithProviders(execCtx, providers)
 	execCtx = jigsawctx.WithLogger(execCtx, e.logger)
 	
-	e.logger.Info("Starting flow execution", map[string]any{
-		"flow":       flowName,
-		"request_id": execCtx.RequestID,
-		"sub":        sub,
-		"tag":        execCtx.Tag,
-	})
+	e.logger.Info().Str("flow", flowName).Str("request_id", execCtx.RequestID).Int("sub", sub).Str("tag", execCtx.Tag).Msg("Starting flow execution")
 	
 	// Execute flow
 	flowExec, err := e.executor.Execute(execCtx, flow)
@@ -120,15 +116,11 @@ func (e *Engine) ExecuteFlow(ctx context.Context, flowName string, sub int, para
 		result.Status = "failed"
 		result.Error = err.Error()
 		
-		logFields := map[string]any{
-			"flow":           flowName,
-			"request_id":     execCtx.RequestID,
-			"execution_time": executionTime,
-		}
+		failedEvt := e.logger.Error().Err(err).Str("flow", flowName).Str("request_id", execCtx.RequestID).Int64("execution_time", executionTime)
 		if execCtx.FlowVersion != "" {
-			logFields["flow_version"] = execCtx.FlowVersion
+			failedEvt = failedEvt.Str("flow_version", execCtx.FlowVersion)
 		}
-		e.logger.Error("Flow execution failed", err, logFields)
+		failedEvt.Msg("Flow execution failed")
 		
 		return result, err
 	}
@@ -136,19 +128,14 @@ func (e *Engine) ExecuteFlow(ctx context.Context, flowName string, sub int, para
 	result.Status = "success"
 	result.Data = execCtx.LastOutput
 	
-	logFields := map[string]any{
-		"flow":           flowName,
-		"request_id":     execCtx.RequestID,
-		"execution_time": executionTime,
-		"tasks_executed": len(flowExec.Tasks),
-	}
+	completedEvt := e.logger.Info().Str("flow", flowName).Str("request_id", execCtx.RequestID).Int64("execution_time", executionTime).Int("tasks_executed", len(flowExec.Tasks))
 	if execCtx.FlowVersion != "" {
-		logFields["flow_version"] = execCtx.FlowVersion
+		completedEvt = completedEvt.Str("flow_version", execCtx.FlowVersion)
 	}
 	if len(execCtx.Versions) > 0 {
-		logFields["versions"] = execCtx.Versions
+		completedEvt = completedEvt.Interface("versions", execCtx.Versions)
 	}
-	e.logger.Info("Flow execution completed", logFields)
+	completedEvt.Msg("Flow execution completed")
 	
 	return result, nil
 }

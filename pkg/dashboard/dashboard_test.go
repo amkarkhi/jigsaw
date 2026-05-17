@@ -11,18 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
-
-// silentLogger keeps test output clean.
-type silentLogger struct{}
-
-func (silentLogger) Trace(string, map[string]any)        {}
-func (silentLogger) Debug(string, map[string]any)        {}
-func (silentLogger) Info(string, map[string]any)         {}
-func (silentLogger) Warn(string, map[string]any)         {}
-func (silentLogger) Error(string, error, map[string]any) {}
-func (l silentLogger) With(map[string]any) types.Logger  { return l }
 
 // scratchConfig writes a minimal but valid config tree to a temp dir.
 func scratchConfig(t *testing.T) string {
@@ -58,7 +48,7 @@ func TestRefusesNonLoopbackWithoutFlag(t *testing.T) {
 	_, err := New(Options{
 		ConfigPath: "/tmp",
 		Listen:     "0.0.0.0:0",
-		Logger:     silentLogger{},
+		Logger:     zerolog.Nop(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "non-loopback") {
 		t.Errorf("expected non-loopback refusal, got: %v", err)
@@ -69,7 +59,7 @@ func TestServerModeRequiresAuth(t *testing.T) {
 	_, err := New(Options{
 		ConfigPath: "/tmp",
 		Mode:       ModeServer,
-		Logger:     silentLogger{},
+		Logger:     zerolog.Nop(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "Auth") {
 		t.Errorf("expected ModeServer requires Auth, got: %v", err)
@@ -81,7 +71,7 @@ func TestLocalModeServesReadAPIs(t *testing.T) {
 	d, err := New(Options{
 		ConfigPath: root,
 		Mode:       ModeLocal,
-		Logger:     silentLogger{},
+		Logger:     zerolog.Nop(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +100,7 @@ func TestServerModeBlocksMutationsForViewer(t *testing.T) {
 	d, err := New(Options{
 		ConfigPath: root,
 		Mode:       ModeServer,
-		Logger:     silentLogger{},
+		Logger:     zerolog.Nop(),
 		Auth: BearerTokens(map[string]TokenInfo{
 			"v": {Label: "v", Role: RoleViewer},
 			"a": {Label: "a", Role: RoleAdmin},
@@ -164,7 +154,7 @@ func TestListenAndServeShutsDownCleanly(t *testing.T) {
 	d, err := New(Options{
 		ConfigPath: root,
 		Listen:     "127.0.0.1:0", // any port
-		Logger:     silentLogger{},
+		Logger:     zerolog.Nop(),
 	})
 	if err != nil {
 		t.Fatal(err)

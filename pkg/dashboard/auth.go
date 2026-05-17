@@ -45,7 +45,7 @@ func (b *bearerAuth) Authenticate(r *http.Request) (Identity, error) {
 	if !ok {
 		return Identity{}, fmt.Errorf("invalid token")
 	}
-	return Identity{Label: info.Label, Role: info.Role}, nil
+	return Identity{Label: info.Label, Role: info.Role, Access: deriveAccess(info.Role, nil)}, nil
 }
 
 // CustomAuth lets a consumer plug in their own auth function — useful when

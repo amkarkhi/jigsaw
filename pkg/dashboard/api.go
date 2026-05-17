@@ -28,6 +28,7 @@ func (d *Dashboard) routes() {
 	d.mux.HandleFunc("/api/bundle", d.handleBundle)
 	d.mux.HandleFunc("/api/flow-location", d.handleFlowLocation)
 	d.mux.HandleFunc("/api/task-location", d.handleTaskLocation)
+	d.mux.HandleFunc("/api/endpoint-location", d.handleEndpointLocation)
 	d.mux.HandleFunc("/api/task-usage", d.handleTaskUsage)
 	d.mux.HandleFunc("/api/layout", d.handleLayout)
 	// Auth endpoints — these need to bypass the auth middleware so the user
@@ -35,6 +36,14 @@ func (d *Dashboard) routes() {
 	d.mux.HandleFunc("/api/login", d.handleLogin)
 	d.mux.HandleFunc("/api/logout", d.handleLogout)
 	d.mux.HandleFunc("/api/me", d.handleMe)
+	d.mux.HandleFunc("/api/auth-info", d.handleAuthInfo)
+	d.mux.HandleFunc("/auth/gitlab/login", d.handleGitLabLogin)
+	d.mux.HandleFunc("/auth/gitlab/callback", d.handleGitLabCallback)
+	d.mux.HandleFunc("/api/git/settings", d.handleGitSettings)
+	d.mux.HandleFunc("/api/git/push", d.handleGitPush)
+	d.mux.HandleFunc("/api/users", d.handleUsers)
+	d.mux.HandleFunc("/api/users/", d.handleUser)
+	d.mux.HandleFunc("/api/playground/run", d.handlePlaygroundRun)
 
 	// Everything else falls through to the static SPA. Routing inside the SPA
 	// is handled client-side.
@@ -56,6 +65,7 @@ func (d *Dashboard) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"config_path":  d.opts.ConfigPath,
 		"server_name":  "jigsaw-dashboard",
 		"service_name": d.opts.ServiceName,
+		"playground":   d.opts.Playground,
 	})
 }
 
