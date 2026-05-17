@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // Registry manages provider instances
@@ -13,11 +14,11 @@ type Registry struct {
 	providers map[string]types.ProviderInstance
 	configs   map[string]*types.Provider
 	mu        sync.RWMutex
-	logger    types.Logger
+	logger    zerolog.Logger
 }
 
 // NewRegistry creates a new provider registry
-func NewRegistry(logger types.Logger) *Registry {
+func NewRegistry(logger zerolog.Logger) *Registry {
 	return &Registry{
 		providers: make(map[string]types.ProviderInstance),
 		configs:   make(map[string]*types.Provider),
@@ -35,11 +36,7 @@ func (r *Registry) RegisterConfig(provider *types.Provider) error {
 	}
 	
 	r.configs[provider.Name] = provider
-	r.logger.Debug("Provider configuration registered", map[string]any{
-		"provider": provider.Name,
-		"type":     provider.Type,
-		"mode":     provider.InitMode,
-	})
+	r.logger.Debug().Str("provider", provider.Name).Str("type", provider.Type).Str("mode", provider.InitMode).Msg("Provider configuration registered")
 	
 	return nil
 }
@@ -77,9 +74,7 @@ func (r *Registry) Register(name string, instance types.ProviderInstance) error 
 	defer r.mu.Unlock()
 	
 	r.providers[name] = instance
-	r.logger.Debug("Provider instance registered", map[string]any{
-		"provider": name,
-	})
+	r.logger.Debug().Str("provider", name).Msg("Provider instance registered")
 	
 	return nil
 }
@@ -95,9 +90,7 @@ func (r *Registry) Close() error {
 			if err := instance.Disconnect(context.Background()); err != nil {
 				errs = append(errs, fmt.Errorf("failed to close %s: %w", name, err))
 			} else {
-				r.logger.Info("Provider disconnected", map[string]any{
-					"provider": name,
-				})
+				r.logger.Info().Str("provider", name).Msg("Provider disconnected")
 			}
 		}
 	}
@@ -122,10 +115,7 @@ func (r *Registry) initLazy(name string, config *types.Provider) (types.Provider
 	instance := NewBaseProvider(config, r.logger)
 	r.providers[name] = instance
 	
-	r.logger.Debug("Lazy provider initialized", map[string]any{
-		"provider": name,
-		"type":     config.Type,
-	})
+	r.logger.Debug().Str("provider", name).Str("type", config.Type).Msg("Lazy provider initialized")
 	
 	return instance, nil
 }
@@ -149,11 +139,7 @@ func (r *Registry) initEager(name string, config *types.Provider) (types.Provide
 	
 	r.providers[name] = instance
 	
-	r.logger.Info("Provider initialized and connected", map[string]any{
-		"provider": name,
-		"type":     config.Type,
-		"mode":     config.InitMode,
-	})
+	r.logger.Info().Str("provider", name).Str("type", config.Type).Str("mode", config.InitMode).Msg("Provider initialized and connected")
 	
 	return instance, nil
 }

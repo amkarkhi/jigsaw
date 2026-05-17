@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	"github.com/amkarkhi/jigsaw/pkg/dashboard"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -19,13 +18,19 @@ import (
 // command so the older read-only UI stays available until feature parity.
 func dashboardCmd() *cobra.Command {
 	var (
-		listen      string
-		mode        string
-		edit        bool
-		allowRemote bool
-		adminTokens []string
-		viewTokens  []string
-		serviceName string
+		listen           string
+		mode             string
+		edit             bool
+		allowRemote      bool
+		adminTokens      []string
+		viewTokens       []string
+		serviceName      string
+		gitlabBaseURL    string
+		gitlabClientID   string
+		gitlabSecret     string
+		gitlabRedirect   string
+		gitlabDefaultRol string
+		playground       bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +44,11 @@ Modes:
   --mode=server  requires bearer-token auth and writes produce a downloadable
                  tar bundle instead of mutating files.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, pretty)
+			log := newLogger(logLevel, pretty)
+
+			// Install the AES key used to seal per-user PATs at rest.
+			// Empty disables the GitLab-push feature.
+			dashboard.SetGitSecretKey(os.Getenv("JIGSAW_GIT_SECRET_KEY"))
 
 			var m dashboard.Mode
 			switch mode {
@@ -59,7 +68,7 @@ Modes:
 				fa := dashboard.NewFileAuth(configPath)
 				if err := fa.EnsureInitialized(); err == nil {
 					auth = fa
-					log.Info("dashboard.auth_file_loaded", nil)
+					log.Info().Msg("dashboard.auth_file_loaded")
 				} else {
 					// Fall back to ad-hoc tokens on flags / env. Kept for
 					// compatibility and quick CI smoke tests.
@@ -80,6 +89,17 @@ Modes:
 				}
 			}
 
+			gl := &dashboard.GitLabOAuthConfig{
+				BaseURL:      firstNonEmpty(gitlabBaseURL, os.Getenv("JIGSAW_GITLAB_BASE_URL")),
+				ClientID:     firstNonEmpty(gitlabClientID, os.Getenv("JIGSAW_GITLAB_CLIENT_ID")),
+				ClientSecret: firstNonEmpty(gitlabSecret, os.Getenv("JIGSAW_GITLAB_CLIENT_SECRET")),
+				RedirectURL:  firstNonEmpty(gitlabRedirect, os.Getenv("JIGSAW_GITLAB_REDIRECT_URL")),
+				DefaultRole:  firstNonEmpty(gitlabDefaultRol, os.Getenv("JIGSAW_GITLAB_DEFAULT_ROLE")),
+			}
+			if gl.Enabled() {
+				log.Info().Str("base", gl.BaseURL).Msg("dashboard.gitlab_oauth_enabled")
+			}
+
 			d, err := dashboard.New(dashboard.Options{
 				ConfigPath:  configPath,
 				Mode:        m,
@@ -89,6 +109,8 @@ Modes:
 				Auth:        auth,
 				Logger:      log,
 				ServiceName: serviceName,
+				GitLabOAuth: gl,
+				Playground:  playground || strings.EqualFold(os.Getenv("JIGSAW_PLAYGROUND"), "true") || os.Getenv("JIGSAW_PLAYGROUND") == "1",
 			})
 			if err != nil {
 				return err
@@ -109,7 +131,20 @@ Modes:
 	cmd.Flags().StringSliceVar(&adminTokens, "admin-token", nil, "Bearer token granting admin role (repeatable; also: JIGSAW_ADMIN_TOKENS comma-separated)")
 	cmd.Flags().StringSliceVar(&viewTokens, "viewer-token", nil, "Bearer token granting viewer role (repeatable; also: JIGSAW_VIEWER_TOKENS comma-separated)")
 	cmd.Flags().StringVar(&serviceName, "service", "", "Service name shown in the dashboard footer (defaults to config path)")
+	cmd.Flags().StringVar(&gitlabBaseURL, "gitlab-base-url", "", "GitLab origin for SSO, e.g. https://gitlab.example.com (env: JIGSAW_GITLAB_BASE_URL)")
+	cmd.Flags().StringVar(&gitlabClientID, "gitlab-client-id", "", "GitLab OAuth application client id (env: JIGSAW_GITLAB_CLIENT_ID)")
+	cmd.Flags().StringVar(&gitlabSecret, "gitlab-client-secret", "", "GitLab OAuth application client secret (env: JIGSAW_GITLAB_CLIENT_SECRET)")
+	cmd.Flags().StringVar(&gitlabRedirect, "gitlab-redirect-url", "", "OAuth redirect URL — must match the application's registered URI (env: JIGSAW_GITLAB_REDIRECT_URL)")
+	cmd.Flags().StringVar(&gitlabDefaultRol, "gitlab-default-role", "viewer", "Role granted to users on first SSO login: admin|viewer (env: JIGSAW_GITLAB_DEFAULT_ROLE)")
+	cmd.Flags().BoolVar(&playground, "playground", false, "Enable the in-browser flow playground page and API (env: JIGSAW_PLAYGROUND=true)")
 	return cmd
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 // collectTokens merges --flag values with the comma-separated contents of the

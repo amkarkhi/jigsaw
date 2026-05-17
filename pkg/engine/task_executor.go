@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // TaskExecutor executes individual tasks
 type TaskExecutor struct {
 	config        *types.Config
-	logger        types.Logger
+	logger        zerolog.Logger
 	logicRegistry *LogicRegistry
 }
 
 // NewTaskExecutor creates a new task executor
-func NewTaskExecutor(config *types.Config, logger types.Logger, logicRegistry *LogicRegistry) *TaskExecutor {
+func NewTaskExecutor(config *types.Config, logger zerolog.Logger, logicRegistry *LogicRegistry) *TaskExecutor {
 	return &TaskExecutor{
 		config:        config,
 		logger:        logger,
@@ -49,12 +50,7 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		execCtx.Versions[fmt.Sprintf("task:%s", task.Name)] = taskExec.TaskVersion
 	}
 
-	t.logger.Debug("Executing task", map[string]any{
-		"task":     task.Name,
-		"version":  resolvedTask.Version,
-		"provider": resolvedTask.Provider,
-		"logic":    resolvedTask.Logic,
-	})
+	t.logger.Debug().Str("task", task.Name).Str("version", resolvedTask.Version).Str("provider", resolvedTask.Provider).Str("logic", resolvedTask.Logic).Msg("Executing task")
 
 	// Get scoped inputs for the task
 	scopedData := execCtx.GetScopedData(resolvedTask)
@@ -118,18 +114,14 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	taskExec.Status = types.StatusCompleted
 	taskExec.CompletedAt = &now
 
-	logFields := map[string]any{
-		"task":     task.Name,
-		"outputs":  outputs,
-		"duration": time.Since(taskExec.StartedAt).Milliseconds(),
-	}
+	completedEvt := t.logger.Debug().Str("task", task.Name).Interface("outputs", outputs).Int64("duration", time.Since(taskExec.StartedAt).Milliseconds())
 	if taskExec.TaskVersion != "" {
-		logFields["version"] = taskExec.TaskVersion
+		completedEvt = completedEvt.Str("version", taskExec.TaskVersion)
 	}
 	if taskExec.ProviderVersion != "" {
-		logFields["provider_version"] = taskExec.ProviderVersion
+		completedEvt = completedEvt.Str("provider_version", taskExec.ProviderVersion)
 	}
-	t.logger.Debug("Task completed successfully", logFields)
+	completedEvt.Msg("Task completed successfully")
 
 	return taskExec, nil
 }
@@ -149,11 +141,7 @@ func (t *TaskExecutor) executeWithProvider(execCtx *types.ExecutionContext, task
 		}
 	}
 
-	t.logger.Debug("Executing task with provider", map[string]any{
-		"task":     task.Name,
-		"provider": task.Provider,
-		"logic":    task.Logic,
-	})
+	t.logger.Debug().Str("task", task.Name).Str("provider", task.Provider).Str("logic", task.Logic).Msg("Executing task with provider")
 
 	// Execute logic with provider
 	return t.executeTaskLogic(execCtx, task.Logic, inputs, provider)
@@ -161,10 +149,7 @@ func (t *TaskExecutor) executeWithProvider(execCtx *types.ExecutionContext, task
 
 // executeLogic executes task logic without a provider
 func (t *TaskExecutor) executeLogic(execCtx *types.ExecutionContext, task *types.Task, inputs map[string]any) (map[string]any, error) {
-	t.logger.Debug("Executing task logic", map[string]any{
-		"task":  task.Name,
-		"logic": task.Logic,
-	})
+	t.logger.Debug().Str("task", task.Name).Str("logic", task.Logic).Msg("Executing task logic")
 
 	// Execute logic without provider
 	return t.executeTaskLogic(execCtx, task.Logic, inputs, nil)
@@ -175,10 +160,7 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 	// Look up logic handler
 	handler, err := t.logicRegistry.Get(logic)
 	if err != nil {
-		t.logger.Warn("Logic handler not found, returning inputs as outputs", map[string]any{
-			"logic": logic,
-			"error": err.Error(),
-		})
+		t.logger.Warn().Str("logic", logic).Err(err).Msg("Logic handler not found, returning inputs as outputs")
 
 		// Return inputs as outputs if no handler registered (for testing/development)
 		outputs := make(map[string]any)
@@ -189,10 +171,7 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 		return outputs, nil
 	}
 
-	t.logger.Debug("Executing task logic", map[string]any{
-		"logic":  logic,
-		"inputs": inputs,
-	})
+	t.logger.Debug().Str("logic", logic).Interface("inputs", inputs).Msg("Executing task logic")
 
 	// Execute the registered handler
 	return handler(execCtx, inputs, provider)
@@ -206,11 +185,7 @@ func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec 
 		return err
 	}
 
-	t.logger.Warn("Task failed, applying fallback strategy", map[string]any{
-		"task":     task.Name,
-		"strategy": task.Fallback.Strategy,
-		"error":    err.Error(),
-	})
+	t.logger.Warn().Str("task", task.Name).Str("strategy", task.Fallback.Strategy).Err(err).Msg("Task failed, applying fallback strategy")
 
 	taskExec.FallbackUsed = true
 
@@ -231,10 +206,7 @@ func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec 
 		taskExec.Status = types.StatusCompleted
 		taskExec.CompletedAt = &now
 
-		t.logger.Info("Task continued with fallback defaults", map[string]any{
-			"task":     task.Name,
-			"defaults": task.Fallback.Defaults,
-		})
+		t.logger.Info().Str("task", task.Name).Interface("defaults", task.Fallback.Defaults).Msg("Task continued with fallback defaults")
 
 		return nil
 
@@ -259,10 +231,7 @@ func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, ta
 	task := taskExec.Task
 
 	for _, providerName := range providers {
-		t.logger.Info("Trying alternate provider", map[string]any{
-			"task":     task.Name,
-			"provider": providerName,
-		})
+		t.logger.Info().Str("task", task.Name).Str("provider", providerName).Msg("Trying alternate provider")
 
 		// Create a temporary task with alternate provider
 		altTask := *task
@@ -279,19 +248,12 @@ func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, ta
 			taskExec.Status = types.StatusCompleted
 			taskExec.CompletedAt = &now
 
-			t.logger.Info("Task succeeded with alternate provider", map[string]any{
-				"task":     task.Name,
-				"provider": providerName,
-			})
+			t.logger.Info().Str("task", task.Name).Str("provider", providerName).Msg("Task succeeded with alternate provider")
 
 			return nil
 		}
 
-		t.logger.Warn("Alternate provider failed", map[string]any{
-			"task":     task.Name,
-			"provider": providerName,
-			"error":    err.Error(),
-		})
+		t.logger.Warn().Str("task", task.Name).Str("provider", providerName).Err(err).Msg("Alternate provider failed")
 	}
 
 	return fmt.Errorf("all provider fallbacks failed for task '%s'", task.Name)
@@ -359,10 +321,7 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 	maps.Copy(resolved.Metadata, resolvedParent.Metadata)
 	maps.Copy(resolved.Metadata, task.Metadata)
 
-	t.logger.Debug("Task inheritance resolved", map[string]any{
-		"task":   task.Name,
-		"parent": task.Inherits,
-	})
+	t.logger.Debug().Str("task", task.Name).Str("parent", task.Inherits).Msg("Task inheritance resolved")
 
 	return resolved, nil
 }

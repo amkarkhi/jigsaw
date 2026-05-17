@@ -34,6 +34,12 @@ func (d *Dashboard) handleTaskLocation(w http.ResponseWriter, r *http.Request) {
 	d.locateResource(w, r, "tasks", "tasks")
 }
 
+// /api/endpoint-location?name=X — same idea, for endpoints/*.yml. Used by
+// the endpoints editor when appending flow mappings or removing them.
+func (d *Dashboard) handleEndpointLocation(w http.ResponseWriter, r *http.Request) {
+	d.locateResource(w, r, "endpoints", "endpoints")
+}
+
 // locateResource walks <subdir>/**/*.yml (recursive) looking for an entry
 // with the requested name under the given top-level YAML key (e.g. "flows:"
 // or "tasks:") and returns the relative path of the file that contains it.

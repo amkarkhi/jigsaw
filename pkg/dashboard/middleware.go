@@ -32,28 +32,20 @@ func (d *Dashboard) withAuth(next http.Handler) http.Handler {
 		// embeds the dashboard incorrectly we surface a clean 503 instead
 		// of a nil-pointer panic.
 		if d.opts.Auth == nil {
-			d.opts.Logger.Error("dashboard.auth_unconfigured", nil, map[string]any{
-				"hint": "ModeServer requires Auth to be configured",
-			})
+			d.opts.Logger.Error().Str("hint", "ModeServer requires Auth to be configured").Msg("dashboard.auth_unconfigured")
 			http.Error(w, "server auth is not configured", http.StatusServiceUnavailable)
 			return
 		}
 		id, err := d.opts.Auth.Authenticate(r)
 		if err != nil {
-			d.opts.Logger.Warn("dashboard.auth_denied", map[string]any{
-				"path":  r.URL.Path,
-				"error": err.Error(),
-			})
+			d.opts.Logger.Warn().Str("path", r.URL.Path).Err(err).Msg("dashboard.auth_denied")
 			w.Header().Set("WWW-Authenticate", `Bearer realm="jigsaw"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		// Viewers may not call any mutating verb.
 		if isMutating(r.Method) && id.Role != RoleAdmin {
-			d.opts.Logger.Warn("dashboard.role_denied", map[string]any{
-				"path":     r.URL.Path,
-				"identity": id.Label,
-			})
+			d.opts.Logger.Warn().Str("path", r.URL.Path).Str("identity", id.Label).Msg("dashboard.role_denied")
 			http.Error(w, "forbidden: viewer role cannot modify", http.StatusForbidden)
 			return
 		}
@@ -77,7 +69,8 @@ func isMutating(method string) bool {
 func isAuthBypass(r *http.Request) bool {
 	p := r.URL.Path
 	switch p {
-	case "/api/login", "/api/me":
+	case "/api/login", "/api/me", "/api/auth-info",
+		"/auth/gitlab/login", "/auth/gitlab/callback":
 		return true
 	}
 	// Static SPA: anything not under /api/ is served from the bundle. We let

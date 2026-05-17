@@ -36,13 +36,32 @@ type AuthFile struct {
 	MasterFingerprint string         `json:"master_fingerprint"`
 	Users            []AuthUser      `json:"users"`
 	Tokens           []AuthToken     `json:"tokens"`
+
+	// GitSettings keyed by username. Holds the user's GitLab base URL, project,
+	// default branch, author identity, and an *encrypted* PAT. Decryption needs
+	// JIGSAW_GIT_SECRET_KEY at the dashboard process. We keep it in the same
+	// file as users so a single read covers identity + push config.
+	GitSettings map[string]UserGitSettings `json:"git_settings,omitempty"`
+}
+
+// UserGitSettings is a per-user GitLab push configuration. Pointer-shaped on
+// the wire so callers can tell "configured" from "all defaults".
+type UserGitSettings struct {
+	BaseURL       string `json:"base_url"`        // e.g. https://gitlab.example.com
+	Project       string `json:"project"`         // group/repo, no leading slash
+	DefaultBranch string `json:"default_branch"`  // e.g. main
+	AuthorName    string `json:"author_name"`     // git commit author
+	AuthorEmail   string `json:"author_email"`    // git commit author
+	EncPAT        string `json:"enc_pat"`         // AES-GCM, base64. Empty when not set.
 }
 
 type AuthUser struct {
-	Username  string `json:"username"`
-	Role      string `json:"role"` // "admin" | "viewer"
-	Hash      string `json:"hash"` // bcrypt hash of password
-	CreatedAt string `json:"created_at"`
+	Username  string   `json:"username"`
+	Role      string   `json:"role"` // "admin" | "viewer"
+	Email     string   `json:"email,omitempty"`
+	Access    []string `json:"access,omitempty"` // resource types this user may edit; ignored for admin
+	Hash      string   `json:"hash"`              // bcrypt hash of password
+	CreatedAt string   `json:"created_at"`
 }
 
 type AuthToken struct {
@@ -274,6 +293,7 @@ func validUsername(s string) bool {
 type session struct {
 	username string
 	role     Role
+	access   []string
 	expires  time.Time
 }
 
@@ -325,7 +345,7 @@ func (f *FileAuth) Authenticate(r *http.Request) (Identity, error) {
 		s, ok := f.sessions[c.Value]
 		f.mu.RUnlock()
 		if ok && time.Now().Before(s.expires) {
-			return Identity{Label: s.username, Role: s.role}, nil
+			return Identity{Label: s.username, Role: s.role, Access: s.access}, nil
 		}
 	}
 
@@ -335,13 +355,30 @@ func (f *FileAuth) Authenticate(r *http.Request) (Identity, error) {
 			af, err := LoadAuthFile(f.configPath)
 			if err == nil && af != nil {
 				if role, ok := af.VerifyToken(token); ok {
-					return Identity{Label: "token", Role: roleFromString(role)}, nil
+					r := roleFromString(role)
+					return Identity{Label: "token", Role: r, Access: deriveAccess(r, nil)}, nil
 				}
 			}
 		}
 	}
 
 	return Identity{}, fmt.Errorf("not authenticated")
+}
+
+// deriveAccess returns the effective access list for a (role, explicit) pair.
+// Admins get the full canonical list (so subsequent permission checks can
+// short-circuit without needing to know the role). Viewers always get nil.
+// Editor identities (the eventual extension) honour the stored list.
+func deriveAccess(role Role, explicit []string) []string {
+	if role == RoleAdmin {
+		out := make([]string, len(AllResources))
+		copy(out, AllResources)
+		return out
+	}
+	if role == RoleViewer {
+		return nil
+	}
+	return append([]string(nil), explicit...)
 }
 
 // Login verifies a username+password against the auth file, creates a
@@ -358,15 +395,105 @@ func (f *FileAuth) Login(username, password string) (string, Identity, error) {
 	if !ok {
 		return "", Identity{}, fmt.Errorf("invalid credentials")
 	}
+	// Find the user record again to pick up the stored access list. We
+	// already know the role from VerifyUserPassword; this just adds Access.
+	var access []string
+	for _, u := range af.Users {
+		if u.Username == username {
+			access = u.Access
+			break
+		}
+	}
+	r := roleFromString(role)
+	effective := deriveAccess(r, access)
 	id := newSessionID()
 	f.mu.Lock()
 	f.sessions[id] = session{
 		username: username,
-		role:     roleFromString(role),
+		role:     r,
+		access:   effective,
 		expires:  time.Now().Add(12 * time.Hour),
 	}
 	f.mu.Unlock()
-	return id, Identity{Label: username, Role: roleFromString(role)}, nil
+	return id, Identity{Label: username, Role: r, Access: effective}, nil
+}
+
+// LoginOAuth creates a session for a user authenticated via an external
+// identity provider (e.g. GitLab SSO). If the user does not yet exist in the
+// auth file, they are auto-provisioned with the given default role and a
+// random non-usable password hash — they can only authenticate via the SSO
+// flow afterwards. Race-safe under concurrent first-logins via the same
+// username because we re-read the file before writing.
+func (f *FileAuth) LoginOAuth(username, defaultRole string) (string, Identity, error) {
+	if !validUsername(username) {
+		return "", Identity{}, fmt.Errorf("identity provider returned unusable username %q", username)
+	}
+	role := defaultRole
+	if role != "admin" && role != "viewer" {
+		role = "viewer"
+	}
+
+	af, err := LoadAuthFile(f.configPath)
+	if err != nil {
+		return "", Identity{}, err
+	}
+	if af == nil {
+		af = &AuthFile{Version: authSchemaVersion}
+	}
+	var existing *AuthUser
+	for i := range af.Users {
+		if af.Users[i].Username == username {
+			existing = &af.Users[i]
+			break
+		}
+	}
+	if existing == nil {
+		// Provision with a random unrecoverable password hash. Storing a
+		// real bcrypt hash (rather than a sentinel) keeps the file shape
+		// uniform and means tooling that touches af.Users doesn't need to
+		// special-case SSO entries.
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return "", Identity{}, err
+		}
+		hash, err := bcrypt.GenerateFromPassword(buf, bcrypt.DefaultCost)
+		if err != nil {
+			return "", Identity{}, err
+		}
+		af.Users = append(af.Users, AuthUser{
+			Username:  username,
+			Role:      role,
+			Hash:      string(hash),
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		})
+		if err := SaveAuthFile(f.configPath, af); err != nil {
+			return "", Identity{}, err
+		}
+	} else {
+		// Existing user — honour their stored role rather than the default.
+		role = existing.Role
+	}
+
+	// Resolve access from the (possibly newly-appended) user record.
+	var access []string
+	for _, u := range af.Users {
+		if u.Username == username {
+			access = u.Access
+			break
+		}
+	}
+	r := roleFromString(role)
+	effective := deriveAccess(r, access)
+	id := newSessionID()
+	f.mu.Lock()
+	f.sessions[id] = session{
+		username: username,
+		role:     r,
+		access:   effective,
+		expires:  time.Now().Add(12 * time.Hour),
+	}
+	f.mu.Unlock()
+	return id, Identity{Label: username, Role: r, Access: effective}, nil
 }
 
 // Logout invalidates a session id.

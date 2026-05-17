@@ -8,7 +8,6 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/configlang"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/symbols"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +31,7 @@ manifest. Override the path with --manifest, or pass --manifest='' to skip.
 
 Exits with status 1 if any error-severity diagnostics are produced.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New("error", false) // quiet — only diagnostics in stdout
+			log := newLogger("error", false) // quiet — only diagnostics in stdout
 
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)

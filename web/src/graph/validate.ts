@@ -1,4 +1,4 @@
-import { Canvas } from "./dag";
+import { Canvas, safeCompile } from "./dag";
 import { TaskSummary } from "../api/client";
 
 // Live structural validation for the graph editor. Runs on every keystroke /
@@ -111,7 +111,6 @@ export function validateCanvas(
   // ---- unknown task names ----------------------------------------------
   const known = new Set(knownTasks.map((t) => t.name));
   for (const n of canvas.nodes) {
-    if (n.taskName.startsWith("·")) continue; // virtual fork/join
     if (!known.has(n.taskName)) {
       issues.push({
         severity: "error",
@@ -125,7 +124,6 @@ export function validateCanvas(
   // ---- unimplemented logic (warning) -----------------------------------
   const taskByName = new Map(knownTasks.map((t) => [t.name, t]));
   for (const n of canvas.nodes) {
-    if (n.taskName.startsWith("·")) continue;
     const t = taskByName.get(n.taskName);
     if (t && !t.logic_implemented && t.logic) {
       warnNodes.add(n.id);
@@ -137,21 +135,61 @@ export function validateCanvas(
     }
   }
 
-  // ---- duplicate task placements (warning) -----------------------------
-  const seen = new Map<string, string[]>();
-  for (const n of canvas.nodes) {
-    if (n.taskName.startsWith("·")) continue;
-    if (!seen.has(n.taskName)) seen.set(n.taskName, []);
-    seen.get(n.taskName)!.push(n.id);
+  // ---- compile errors (empty parallel branches, etc.) ------------------
+  // Run the same compile the save path runs and bubble any structural
+  // error up so the user sees it inline. This catches things like a fork
+  // with one branch that has a direct edge to the join (empty branch).
+  const compileResult = safeCompile(canvas);
+  if (!compileResult.ok) {
+    issues.push({ severity: "error", message: compileResult.error });
   }
-  for (const [name, ids] of seen) {
+
+  // ---- duplicate task placements (error / warning) --------------------
+  // Labels are flow-scoped — a task placed multiple times is fine as long
+  // as each placement has a distinct label. Group by (taskName + label)
+  // and only flag genuine collisions.
+  const byIdentity = new Map<string, string[]>();
+  const byName = new Map<string, string[]>();
+  for (const n of canvas.nodes) {
+    const labelKey = n.label?.trim() ?? "";
+    const idKey = `${n.taskName}::${labelKey}`;
+    if (!byIdentity.has(idKey)) byIdentity.set(idKey, []);
+    byIdentity.get(idKey)!.push(n.id);
+    if (!byName.has(n.taskName)) byName.set(n.taskName, []);
+    byName.get(n.taskName)!.push(n.id);
+  }
+  for (const [idKey, ids] of byIdentity) {
     if (ids.length > 1) {
+      const [name, labelKey] = idKey.split("::");
+      const labelPart = labelKey ? ` and label "${labelKey}"` : " and no label";
       issues.push({
-        severity: "warning",
-        message: `Task "${name}" appears ${ids.length} times in this flow. Labels become ambiguous when the same task is placed multiple times.`,
+        severity: "error",
+        message: `Task "${name}"${labelPart} is placed ${ids.length} times. Each placement of the same task must have a distinct label.`,
         nodeIds: ids,
       });
-      ids.forEach((id) => warnNodes.add(id));
+      ids.forEach((id) => problemNodes.add(id));
+    }
+  }
+  for (const [name, ids] of byName) {
+    if (ids.length > 1) {
+      // Multiple placements of the same task — any without a label?
+      const unlabelled = ids.filter((id) => {
+        const n = canvas.nodes.find((x) => x.id === id);
+        return !n || !n.label?.trim();
+      });
+      if (unlabelled.length > 0 && ids.length > unlabelled.length) {
+        // Mixed: some labeled, some not — only the unlabeled ones are a problem,
+        // and the (name + "") collision case above will already flag them if
+        // there's more than one. The single-unlabeled case is informational.
+        if (unlabelled.length === 1) {
+          issues.push({
+            severity: "warning",
+            message: `Task "${name}" has one placement without a label and ${ids.length - 1} with labels. Consider labelling this one too for clarity.`,
+            nodeIds: unlabelled,
+          });
+          unlabelled.forEach((id) => warnNodes.add(id));
+        }
+      }
     }
   }
 

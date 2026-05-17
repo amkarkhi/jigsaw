@@ -12,20 +12,10 @@ import (
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/configlang"
 	"github.com/amkarkhi/jigsaw/pkg/symbols"
-	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 const ServerName = "jigsaw-lsp"
-
-// silentLogger keeps the engine quiet while running embedded in the LSP.
-type silentLogger struct{}
-
-func (silentLogger) Trace(string, map[string]any)        {}
-func (silentLogger) Debug(string, map[string]any)        {}
-func (silentLogger) Info(string, map[string]any)         {}
-func (silentLogger) Warn(string, map[string]any)         {}
-func (silentLogger) Error(string, error, map[string]any) {}
-func (l silentLogger) With(map[string]any) types.Logger  { return l }
 
 // Server is a stateful LSP server bound to one config root. Editing any file
 // in the workspace re-runs configlang.Check over the whole tree; diagnostics
@@ -222,7 +212,7 @@ func (s *Server) publish() error {
 // For v0 the LSP gives instant feedback on saved state plus a "save to see
 // updated diagnostics" model.
 func (s *Server) computeWorkspaceDiagnostics(root string) []lspDiagnostic {
-	loader := config.NewLoader(silentLogger{})
+	loader := config.NewLoader(zerolog.Nop())
 	cfg, err := loader.Load(root)
 	if err != nil {
 		return []lspDiagnostic{{

@@ -9,6 +9,7 @@ import { api } from "../api/client";
 export interface CurrentUser {
   label: string;
   role: "admin" | "viewer";
+  access: string[];
 }
 
 export function AuthGate({ children }: { children: (user: CurrentUser) => ReactNode }) {
@@ -23,7 +24,11 @@ export function AuthGate({ children }: { children: (user: CurrentUser) => ReactN
       .then((res) => {
         if (cancelled) return;
         if (res.authenticated && res.label) {
-          setUser({ label: res.label, role: (res.role ?? "viewer") as "admin" | "viewer" });
+          setUser({
+            label: res.label,
+            role: (res.role ?? "viewer") as "admin" | "viewer",
+            access: res.access ?? [],
+          });
         } else {
           setUnauth(true);
         }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "../api/client";
 
@@ -11,7 +11,14 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gitlabEnabled, setGitlabEnabled] = useState(false);
   const location = useLocation();
+
+  useEffect(() => {
+    api.authInfo()
+      .then((info) => setGitlabEnabled(!!info.gitlab))
+      .catch(() => {});
+  }, []);
 
   // The auth gate stashes the original target in `state.from`; default to /.
   const from = (location.state as { from?: string } | null)?.from ?? "/";
@@ -96,6 +103,31 @@ export default function Login() {
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>
+
+        {gitlabEnabled && (
+          <>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              margin: "20px 0 12px", color: "var(--text-dim)", fontSize: 11,
+              textTransform: "uppercase", letterSpacing: 0.5,
+            }}>
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+              or
+              <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            </div>
+            <a
+              href="/auth/gitlab/login"
+              className="btn"
+              style={{
+                display: "block", width: "100%", textAlign: "center",
+                padding: 10, textDecoration: "none",
+                borderColor: "#fc6d26", color: "#fc6d26",
+              }}
+            >
+              Sign in with GitLab
+            </a>
+          </>
+        )}
 
         <div className="meta" style={{ fontSize: 11, marginTop: 16, textAlign: "center" }}>
           Or send <code>Authorization: Bearer &lt;token&gt;</code> for API access.

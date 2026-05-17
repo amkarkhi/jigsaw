@@ -6,6 +6,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
+	"github.com/rs/zerolog"
 )
 
 // checkAgainstSchema cross-references a task's declared inputs/outputs against
@@ -133,7 +134,7 @@ func Check(cfg *types.Config, opts CheckOptions) []Diagnostic {
 	var diags []Diagnostic
 
 	// Run the structural validator.
-	v := validator.New(silentLogger{})
+	v := validator.New(zerolog.Nop())
 	if err := v.ValidateConfig(cfg); err != nil {
 		diags = append(diags, Diagnostic{
 			Severity: SeverityError,
@@ -197,13 +198,3 @@ func Counts(diags []Diagnostic) (errors, warnings int) {
 	return
 }
 
-// silentLogger is a no-op logger for use inside the checker, so validator
-// info/debug messages don't pollute `jigsaw check` output.
-type silentLogger struct{}
-
-func (l silentLogger) Trace(string, map[string]any)        {}
-func (l silentLogger) Debug(string, map[string]any)        {}
-func (l silentLogger) Info(string, map[string]any)         {}
-func (l silentLogger) Warn(string, map[string]any)         {}
-func (l silentLogger) Error(string, error, map[string]any) {}
-func (l silentLogger) With(map[string]any) types.Logger    { return l }

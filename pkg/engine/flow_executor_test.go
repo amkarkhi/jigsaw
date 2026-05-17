@@ -8,8 +8,9 @@ import (
 	"time"
 
 	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/types"
+
+	"github.com/rs/zerolog"
 )
 
 // nullProviders satisfies types.ProviderRegistry for tests that don't use
@@ -38,7 +39,7 @@ func sleepLogic(d time.Duration, value string) LogicHandler {
 
 func newEngine(t *testing.T, cfg *types.Config, register func(*Engine)) (*Engine, *types.ExecutionContext) {
 	t.Helper()
-	log := logger.New("error", false)
+	log := zerolog.Nop()
 	eng := New(cfg, nil, log)
 	register(eng)
 	execCtx := jigsawctx.New(context.Background(), "test", 0, nil, nil)

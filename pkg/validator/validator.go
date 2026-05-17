@@ -4,15 +4,16 @@ import (
 	"fmt"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/rs/zerolog"
 )
 
 // Validator validates configuration and inputs/outputs
 type Validator struct {
-	logger types.Logger
+	logger zerolog.Logger
 }
 
 // New creates a new validator
-func New(logger types.Logger) *Validator {
+func New(logger zerolog.Logger) *Validator {
 	return &Validator{
 		logger: logger,
 	}
@@ -20,7 +21,7 @@ func New(logger types.Logger) *Validator {
 
 // ValidateConfig validates the entire configuration
 func (v *Validator) ValidateConfig(config *types.Config) error {
-	v.logger.Info("Validating configuration", nil)
+	v.logger.Info().Msg("Validating configuration")
 	
 	// Validate tasks
 	for name, task := range config.Tasks {
@@ -43,7 +44,7 @@ func (v *Validator) ValidateConfig(config *types.Config) error {
 		}
 	}
 	
-	v.logger.Info("Configuration validation successful", nil)
+	v.logger.Info().Msg("Configuration validation successful")
 	return nil
 }
 
@@ -214,8 +215,15 @@ func (v *Validator) validateTaskRef(ref types.TaskRef, config *types.Config, sco
 		}
 	}
 
-	if resolvedTask.Label != "" {
-		scope.publish(resolvedTask.Label)
+	// Labels are flow-scoped. A per-placement label on the TaskRef wins;
+	// fall back to the Task's own label (kept for back-compat) only if the
+	// TaskRef didn't set one.
+	effectiveLabel := ref.Label
+	if effectiveLabel == "" {
+		effectiveLabel = resolvedTask.Label
+	}
+	if effectiveLabel != "" {
+		scope.publish(effectiveLabel)
 	}
 	return nil
 }

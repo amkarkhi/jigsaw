@@ -4,19 +4,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/engine"
-	"github.com/amkarkhi/jigsaw/pkg/logger"
 	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/server"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
-	
+
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
+
+func newLogger(level string, pretty bool) zerolog.Logger {
+	var output io.Writer = os.Stdout
+	if pretty {
+		output = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	}
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	lvl, err := zerolog.ParseLevel(level)
+	if err != nil || lvl == zerolog.NoLevel {
+		lvl = zerolog.InfoLevel
+	}
+	return zerolog.New(output).Level(lvl).With().Timestamp().Caller().Logger()
+}
 
 var (
 	configPath string
@@ -69,12 +84,9 @@ func serveCmd() *cobra.Command {
 		Long:  "Starts the Jigsaw HTTP server to handle flow execution requests",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Create logger
-			log := logger.New(logLevel, pretty)
+			log := newLogger(logLevel, pretty)
 			
-			log.Info("Starting Jigsaw server", map[string]any{
-				"config": configPath,
-				"port":   port,
-			})
+			log.Info().Str("config", configPath).Int("port", port).Msg("Starting Jigsaw server")
 			
 			// Load configuration
 			loader := config.NewLoader(log)
@@ -114,7 +126,7 @@ func serveCmd() *cobra.Command {
 			// Wait for shutdown signal or error
 			select {
 			case <-sigChan:
-				log.Info("Shutdown signal received", nil)
+				log.Info().Msg("Shutdown signal received")
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*1000000000) // 30 seconds
 				defer shutdownCancel()
 				return srv.Stop(shutdownCtx)
@@ -137,7 +149,7 @@ func validateCmd() *cobra.Command {
 		Short: "Validate configuration files",
 		Long:  "Validates all configuration files for syntax and logic errors",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, pretty)
+			log := newLogger(logLevel, pretty)
 			
 			fmt.Printf("Validating configuration in: %s\n", configPath)
 			
@@ -186,7 +198,7 @@ func listFlowsCmd() *cobra.Command {
 		Use:   "flows",
 		Short: "List all flows",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -216,7 +228,7 @@ func listTasksCmd() *cobra.Command {
 		Use:   "tasks",
 		Short: "List all tasks",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -249,7 +261,7 @@ func listProvidersCmd() *cobra.Command {
 		Use:   "providers",
 		Short: "List all providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -277,7 +289,7 @@ func listEndpointsCmd() *cobra.Command {
 		Use:   "endpoints",
 		Short: "List all endpoints",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -323,7 +335,7 @@ func describeFlowCmd() *cobra.Command {
 		Short: "Describe a flow",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -350,7 +362,7 @@ func describeTaskCmd() *cobra.Command {
 		Short: "Describe a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, false)
+			log := newLogger(logLevel, false)
 			loader := config.NewLoader(log)
 			cfg, err := loader.Load(configPath)
 			if err != nil {
@@ -395,7 +407,7 @@ func testFlowCmd() *cobra.Command {
 		Short: "Test a flow execution",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := logger.New(logLevel, pretty)
+			log := newLogger(logLevel, pretty)
 			
 			// Load configuration
 			loader := config.NewLoader(log)

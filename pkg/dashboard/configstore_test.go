@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 // helper: POST JSON.
@@ -27,7 +29,7 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 
 func TestSaveRejectsUnsafePath(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 
@@ -42,7 +44,7 @@ func TestSaveRejectsUnsafePath(t *testing.T) {
 
 func TestSaveBlocksWhenEditOff(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: false, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: false, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 
@@ -57,7 +59,7 @@ func TestSaveBlocksWhenEditOff(t *testing.T) {
 
 func TestSaveValidatesBeforeWriting(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 
@@ -96,7 +98,7 @@ func TestSaveValidatesBeforeWriting(t *testing.T) {
 
 func TestSaveHappyPathWritesFile(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 
@@ -126,7 +128,7 @@ func TestSaveHappyPathWritesFile(t *testing.T) {
 
 func TestBundleStreamsTarGz(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 
@@ -170,7 +172,7 @@ func TestBundleStreamsTarGz(t *testing.T) {
 
 func TestTreeListsKnownConfigFiles(t *testing.T) {
 	root := scratchConfig(t)
-	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: silentLogger{}})
+	d, _ := New(Options{ConfigPath: root, Edit: true, Logger: zerolog.Nop()})
 	ts := httptest.NewServer(d.Handler())
 	defer ts.Close()
 

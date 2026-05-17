@@ -189,11 +189,17 @@ export default function TaskDetail() {
         </div>
       )}
 
+      {edited.label && (
+        <div className="diag warning" style={{ marginBottom: 12 }}>
+          This task has a top-level <code>label</code> set in YAML. Labels are
+          now a per-placement concept on <code>TaskRef</code> — set them in
+          the flow graph editor's inspector instead. The existing value is
+          preserved for back-compat but new flows should label per-placement.
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
         <DetailCard title="Properties">
-          <FieldRow label="label">
-            <input className="input" value={edited.label} onChange={(e) => patch("label", e.target.value)} placeholder="(optional flow-local name)" />
-          </FieldRow>
           <FieldRow label="description">
             <input className="input" value={edited.description} onChange={(e) => patch("description", e.target.value)} />
           </FieldRow>
