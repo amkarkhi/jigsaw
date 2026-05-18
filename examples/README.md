@@ -145,17 +145,26 @@ curl -X POST http://localhost:8080/api/search \
 
 ### Add Your Own Logic
 
-In `server/main.go`, find `registerLogicHandlers()`:
+In `jig-test/main.go`, find `registerLogicHandlers()`:
 
 ```go
-func registerLogicHandlers(eng *engine.Engine, log types.Logger) {
-    // Add YOUR logic here
-    eng.MustRegisterLogic("my_custom_logic", func(ctx *types.ExecutionContext, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error) {
-        // YOUR implementation
-        return map[string]any{
-            "result": "success",
-        }, nil
-    })
+// Define a struct with LogicMeta() and Run(...) methods.
+type MyLogic struct{}
+
+func (MyLogic) LogicMeta() engine.LogicMeta {
+    return engine.LogicMeta{Name: "my_custom_logic", Version: "1.0.0"}
+}
+
+type myIn struct{ Query string `json:"query"` }
+type myOut struct{ Result string `json:"result"` }
+type myParams struct{}
+
+func (MyLogic) Run(_ *types.ExecutionContext, in myIn, _ myParams) (myOut, error) {
+    return myOut{Result: "processed: " + in.Query}, nil
+}
+
+func registerLogicHandlers(eng *engine.Engine, log zerolog.Logger) {
+    engine.MustRegister(eng, MyLogic{})
 }
 ```
 
@@ -233,7 +242,7 @@ go run ./examples/server/main.go
 
 **Solution**: Add logic handler in `registerLogicHandlers()`:
 ```go
-eng.MustRegisterLogic("your_logic_name", yourFunction)
+engine.MustRegister(eng, YourLogicStruct{})
 ```
 
 ### "Provider not found"

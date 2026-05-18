@@ -244,7 +244,7 @@ func listTasksCmd() *cobra.Command {
 				if task.Provider != "" {
 					fmt.Printf("    Provider: %s\n", task.Provider)
 				}
-				fmt.Printf("    Inputs: %d, Outputs: %d\n", len(task.Inputs), len(task.Outputs))
+				fmt.Printf("    Params: %d\n", len(task.Params))
 				if task.Inherits != "" {
 					fmt.Printf("    Inherits: %s\n", task.Inherits)
 				}

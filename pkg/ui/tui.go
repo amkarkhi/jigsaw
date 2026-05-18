@@ -214,7 +214,7 @@ func (m *TUI) renderTasks() string {
 			if task.Provider != "" {
 				b.WriteString(fmt.Sprintf("    Provider: %s\n", task.Provider))
 			}
-			b.WriteString(fmt.Sprintf("    Inputs: %d, Outputs: %d\n", len(task.Inputs), len(task.Outputs)))
+			b.WriteString(fmt.Sprintf("    Params: %d\n", len(task.Params)))
 			if task.Inherits != "" {
 				b.WriteString(fmt.Sprintf("    Inherits: %s\n", task.Inherits))
 			}

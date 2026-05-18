@@ -4,8 +4,19 @@ flows:
     version: "1.2.0"
     tasks:
       - name: parse_params
+        bind:
+          in:
+            Q: query
+          out:
+            parsed_query: pq
       - name: use_cache
+        bind:
+          in:
+            parsed_query: pq
       - name: response_builder
+        bind:
+          in:
+            parsed_query: pq
     metadata:
       cache_enabled: true
       author: "jigsaw-team"

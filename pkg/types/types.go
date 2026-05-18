@@ -47,17 +47,59 @@ type Flow struct {
 
 // TaskRef can be a simple task reference or a parallel block.
 // Exactly one of Name or Parallel must be set.
-//
-// Label is a per-placement override. The Task definition itself does not
-// own a label — labels are a flow-scoped concept that lets the same task
-// be referenced multiple times in one flow without ambiguity. When set,
-// Label takes precedence over the older Task.Label (which is kept for
-// back-compat and acts as a default).
 type TaskRef struct {
 	Name      string         `yaml:"name,omitempty" json:"name,omitempty"`
-	Label     string         `yaml:"label,omitempty" json:"label,omitempty"`
 	Overrides []TaskOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 	Parallel  *ParallelBlock `yaml:"parallel,omitempty" json:"parallel,omitempty"`
+	Bind      *Bind          `yaml:"bind,omitempty" json:"bind,omitempty"`
+}
+
+// Bind carries the input and output scope-wiring for a TaskRef.
+// In maps handler-input-name → scope-key-to-read-from.
+// Out maps handler-output-name → scope-key-to-publish-to.
+type Bind struct {
+	In  map[string]string `yaml:"in,omitempty" json:"in,omitempty"`
+	Out map[string]string `yaml:"out,omitempty" json:"out,omitempty"`
+}
+
+// InMap returns the In map, or nil when b is nil.
+func (b *Bind) InMap() map[string]string {
+	if b == nil {
+		return nil
+	}
+	return b.In
+}
+
+// OutMap returns the Out map, or nil when b is nil.
+func (b *Bind) OutMap() map[string]string {
+	if b == nil {
+		return nil
+	}
+	return b.Out
+}
+
+// ResolveIn returns the scope key for the given handler input field.
+// When no rename is declared it returns field unchanged.
+func (b *Bind) ResolveIn(field string) string {
+	if b == nil {
+		return field
+	}
+	if mapped, ok := b.In[field]; ok {
+		return mapped
+	}
+	return field
+}
+
+// ResolveOut returns the scope key for the given handler output field.
+// When no rename is declared it returns field unchanged.
+func (b *Bind) ResolveOut(field string) string {
+	if b == nil {
+		return field
+	}
+	if renamed, ok := b.Out[field]; ok {
+		return renamed
+	}
+	return field
 }
 
 // ParallelBlock declares N branches to execute concurrently.
@@ -84,10 +126,8 @@ type Task struct {
 	Name        string         `yaml:"name" json:"name"`
 	Description string         `yaml:"description" json:"description,omitempty"`
 	Version     string         `yaml:"version,omitempty" json:"version,omitempty"`
-	Label       string         `yaml:"label,omitempty" json:"label,omitempty"`
 	Inherits    string         `yaml:"inherits,omitempty" json:"inherits,omitempty"`
-	Inputs      []FieldDef     `yaml:"inputs" json:"inputs"`
-	Outputs     []FieldDef     `yaml:"outputs" json:"outputs"`
+	Params      map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 	Provider    string         `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Fallback    *Fallback      `yaml:"fallback,omitempty" json:"fallback,omitempty"`
 	Logic       string         `yaml:"logic" json:"logic,omitempty"`
@@ -96,26 +136,11 @@ type Task struct {
 	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
-// FieldDef defines input/output field definition.
-// For inputs, From and Field control label-based resolution:
-//   - From is a dotted path "[branch.]*label" identifying the producer.
-//   - Field picks a single field from the producer's outputs; defaults to Name.
-type FieldDef struct {
-	Name       string `yaml:"name" json:"name"`
-	Type       string `yaml:"type" json:"type"`
-	Required   bool   `yaml:"required" json:"required,omitempty"`
-	Default    any    `yaml:"default,omitempty" json:"default,omitempty"`
-	Validation string `yaml:"validation,omitempty" json:"validation,omitempty"`
-	From       string `yaml:"from,omitempty" json:"from,omitempty"`
-	Field      string `yaml:"field,omitempty" json:"field,omitempty"`
-}
-
 // Fallback defines error handling strategy
 type Fallback struct {
 	Strategy   string         `yaml:"strategy" json:"strategy"`
 	Message    string         `yaml:"message,omitempty" json:"message,omitempty"`
 	Defaults   map[string]any `yaml:"defaults,omitempty" json:"defaults,omitempty"`
-	TargetTask string         `yaml:"target_task,omitempty" json:"target_task,omitempty"`
 	Providers  []string       `yaml:"providers,omitempty" json:"providers,omitempty"`
 	RetryCount int            `yaml:"retry_count,omitempty" json:"retry_count,omitempty"`
 	RetryDelay int            `yaml:"retry_delay,omitempty" json:"retry_delay,omitempty"`
@@ -136,16 +161,13 @@ type Provider struct {
 // RUNTIME TYPES
 // =====================================================================
 
-// LabeledProducer records a single producer's contribution to the label index.
-type LabeledProducer struct {
-	TaskName   string
-	BranchPath []string // Empty for main-flow producers
-	Outputs    map[string]any
+// ScopedVar holds a single named value in the execution scope along with its
+// JSON-schema-style type tag (used for runtime type checking and validator
+// simulation).
+type ScopedVar struct {
+	Value any
+	Type  string // JSON-schema type: "string","number","boolean","object","array","null"
 }
-
-// LabelIndex maps a label to all producers that have published under it, in
-// completion order. Resolution rules live in ExecutionContext.ResolveLabel.
-type LabelIndex map[string][]LabeledProducer
 
 // ExecutionContext carries data through flow execution.
 // Within a single goroutine it is safe to mutate. When forking into parallel
@@ -160,8 +182,7 @@ type ExecutionContext struct {
 	Tag         string            // Tag for task overrides
 	Parameters  map[string]any    // Request parameters
 	Headers     map[string]string // HTTP headers
-	TaskOutputs map[string]any    // All task outputs (keyed by qualified task name)
-	LastOutput  any               // Output from previous task; nil after a parallel block
+	Scope       map[string]ScopedVar // Flat execution scope; keyed by variable name
 	Metadata    map[string]any    // Additional runtime metadata
 	Versions    map[string]string // Version tracking: task_name -> version
 	Providers   ProviderRegistry  // Provider registry interface
@@ -172,191 +193,33 @@ type ExecutionContext struct {
 	// Empty at the top level. Populated by context.Fork.
 	BranchPath []string
 
-	// Labels backs label-based input resolution. Shared structure between a
-	// parent and a freshly-forked branch (the branch only writes to its own
-	// snapshot, which is merged back at join time by context.Merge).
-	Labels LabelIndex
+	// parentScope is non-nil only for branch contexts created by Fork. Reads
+	// fall back to the parent when the key is absent from the local Scope.
+	parentScope *ExecutionContext
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// GetScopedData returns data accessible to the current task. Inputs are
-// resolved with the following priority:
-//  1. Request parameters (by input name).
-//  2. Label-based lookup when input.From is set (see ResolveLabel).
-//  3. Field-name scan across recorded task outputs (legacy behavior).
-func (e *ExecutionContext) GetScopedData(task *Task) map[string]any {
-	data := make(map[string]any)
-	data["_last_output"] = e.LastOutput
-
-	for _, input := range task.Inputs {
-		if val, ok := e.Parameters[input.Name]; ok {
-			data[input.Name] = val
-			continue
-		}
-
-		if input.From != "" {
-			if val, ok := e.ResolveLabel(input.From, input.fieldOrName()); ok {
-				data[input.Name] = val
-			}
-			continue
-		}
-
-		for _, taskOutput := range e.TaskOutputs {
-			if outputMap, ok := taskOutput.(map[string]any); ok {
-				if val, ok := outputMap[input.Name]; ok {
-					data[input.Name] = val
-					break
-				}
-			}
-		}
+// ScopeGet returns the named variable, searching the local scope first, then
+// the parent chain (set at Fork time).
+func (e *ExecutionContext) ScopeGet(name string) (ScopedVar, bool) {
+	if v, ok := e.Scope[name]; ok {
+		return v, true
 	}
-
-	data["_metadata"] = e.Metadata
-	data["_tag"] = e.Tag
-	data["_sub"] = e.Sub
-
-	return data
+	if e.parentScope != nil {
+		return e.parentScope.ScopeGet(name)
+	}
+	return ScopedVar{}, false
 }
 
-// fieldOrName returns the effective output field name to read from the
-// resolved producer's outputs.
-func (f FieldDef) fieldOrName() string {
-	if f.Field != "" {
-		return f.Field
+// ScopePut writes a variable into the local scope of this context.
+func (e *ExecutionContext) ScopePut(name string, v ScopedVar) {
+	if e.Scope == nil {
+		e.Scope = make(map[string]ScopedVar)
 	}
-	return f.Name
-}
-
-// ResolveLabel implements `from:` lookup. The path is "[branch.]*label".
-// A consumer at branch path C resolving "P1.P2....label" looks for a producer
-// whose BranchPath == C + [P1..Pn].
-//
-// When the path is unqualified (`from: label`), the producer must live in the
-// same branch path as the consumer. If sibling branches produced the same
-// label, this is ambiguous and the function returns (nil, false) — the
-// validator is expected to catch such cases at config load time.
-func (e *ExecutionContext) ResolveLabel(fromPath, field string) (any, bool) {
-	if fromPath == "" {
-		return nil, false
-	}
-
-	segments := splitDots(fromPath)
-	label := segments[len(segments)-1]
-	branchSuffix := segments[:len(segments)-1]
-
-	expectedPath := append(append([]string{}, e.BranchPath...), branchSuffix...)
-
-	producers, ok := e.Labels[label]
-	if !ok {
-		return nil, false
-	}
-
-	var match *LabeledProducer
-	ambiguous := false
-	for i := range producers {
-		p := &producers[i]
-		if !pathEqual(p.BranchPath, expectedPath) {
-			// If the consumer used an unqualified label, also accept producers
-			// whose branch path is a strict prefix of the consumer's (i.e.
-			// they live in an enclosing scope). We never accept producers in
-			// sibling or unrelated branches.
-			if len(branchSuffix) == 0 && isPrefix(p.BranchPath, e.BranchPath) {
-				if match != nil && !pathEqual(match.BranchPath, p.BranchPath) {
-					ambiguous = true
-				}
-				match = p
-			}
-			continue
-		}
-		match = p
-	}
-	if ambiguous || match == nil {
-		return nil, false
-	}
-
-	if field == "" {
-		return match.Outputs, true
-	}
-	val, ok := match.Outputs[field]
-	return val, ok
-}
-
-// SetTaskOutput stores task output in context. The task name is stored using
-// the context's branch path as a prefix, ensuring sibling branches that run
-// the same task name do not collide in TaskOutputs.
-func (e *ExecutionContext) SetTaskOutput(taskName string, output map[string]any) {
-	e.TaskOutputs[e.qualify(taskName)] = output
-	e.LastOutput = output
+	e.Scope[name] = v
 	e.UpdatedAt = time.Now()
-}
-
-// PublishLabel records a labeled output in the label index under the current
-// branch path. Called by the task executor whenever a task with a non-empty
-// label completes successfully.
-func (e *ExecutionContext) PublishLabel(label, taskName string, output map[string]any) {
-	if label == "" {
-		return
-	}
-	if e.Labels == nil {
-		e.Labels = make(LabelIndex)
-	}
-	branchPath := append([]string{}, e.BranchPath...)
-	e.Labels[label] = append(e.Labels[label], LabeledProducer{
-		TaskName:   taskName,
-		BranchPath: branchPath,
-		Outputs:    output,
-	})
-}
-
-// qualify returns the branch-qualified storage key for a task name.
-func (e *ExecutionContext) qualify(taskName string) string {
-	if len(e.BranchPath) == 0 {
-		return taskName
-	}
-	out := ""
-	for _, b := range e.BranchPath {
-		out += b + "."
-	}
-	return out + taskName
-}
-
-func splitDots(s string) []string {
-	parts := []string{}
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '.' {
-			parts = append(parts, s[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
-}
-
-func pathEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func isPrefix(prefix, full []string) bool {
-	if len(prefix) > len(full) {
-		return false
-	}
-	for i := range prefix {
-		if prefix[i] != full[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // FlowExecution represents a flow execution instance
@@ -407,7 +270,7 @@ const (
 
 // TaskExecutor executes task logic
 type TaskExecutor interface {
-	Execute(ctx *ExecutionContext, task *Task, inputs map[string]any) (map[string]any, error)
+	Execute(ctx *ExecutionContext, task *Task, ref TaskRef) (map[string]any, error)
 }
 
 // ProviderRegistry manages provider instances
@@ -443,10 +306,8 @@ type FlowRouter interface {
 	Route(endpoint *Endpoint, sub int) (*Flow, error)
 }
 
-// Validator validates inputs and outputs
+// Validator validates configuration.
 type Validator interface {
-	ValidateInputs(task *Task, inputs map[string]any) error
-	ValidateOutputs(task *Task, outputs map[string]any) error
 	ValidateConfig(config *Config) error
 }
 

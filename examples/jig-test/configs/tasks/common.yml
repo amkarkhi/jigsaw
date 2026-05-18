@@ -2,15 +2,9 @@ tasks:
   - name: parse_params
     description: "Parse and validate input parameters"
     version: "2.1.0"
-    inputs:
-      - name: query
-        type: string
-        required: true
-    outputs:
-      - name: parsed_query
-        type: string
-        required: true
     logic: parse_and_validate_params
+    params:
+      max_length: 100
     timeout: 1000
     fallback:
       strategy: abort
@@ -19,18 +13,8 @@ tasks:
   - name: use_cache
     description: "Check cache for existing results"
     version: "1.5.2"
-    inputs:
-      - name: parsed_query
-        type: string
-        required: true
-    outputs:
-      - name: cache_hit
-        type: boolean
-        required: true
-      - name: cached_result
-        type: object
-        required: false
     logic: check_cache
+    provider: cache
     timeout: 500
     fallback:
       strategy: continue
@@ -39,20 +23,6 @@ tasks:
   - name: response_builder
     description: "Build final response based on cache and query"
     version: "3.0.1"
-    inputs:
-      - name: cache_hit
-        type: boolean
-        required: true
-      - name: cached_result
-        type: object
-        required: false
-      - name: parsed_query
-        type: string
-        required: true
-    outputs:
-      - name: response
-        type: object
-        required: true
     logic: build_response
     timeout: 1000
     fallback:

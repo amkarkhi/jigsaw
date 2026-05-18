@@ -106,8 +106,6 @@ func TestSaveHappyPathWritesFile(t *testing.T) {
   - name: hello
     description: greet (edited)
     logic: noop
-    inputs: []
-    outputs: []
 `
 	res := postJSON(t, ts.URL+"/api/files", SavePayload{
 		Files: map[string]string{"tasks/t.yml": newTask},
@@ -136,8 +134,6 @@ func TestBundleStreamsTarGz(t *testing.T) {
   - name: hello
     description: greet
     logic: noop
-    inputs: []
-    outputs: []
 `
 	res := postJSON(t, ts.URL+"/api/bundle", SavePayload{
 		Files: map[string]string{"tasks/t.yml": newTask},

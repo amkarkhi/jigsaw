@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import ReactFlow, {
   Background,
@@ -20,9 +20,9 @@ import "reactflow/dist/style.css";
 import Editor from "@monaco-editor/react";
 import { defineJigsawTheme, JIGSAW_THEME } from "../lib/monacoTheme";
 import yaml from "js-yaml";
-import { api, Diagnostic, FlowSummary, TaskSummary } from "../api/client";
+import { api, Diagnostic, FlowSummary, LogicHandler, TaskSummary, JSONSchema } from "../api/client";
 import { autoLayout, Canvas, CanvasEdge, CanvasNode, decompile, layoutKey, safeCompile } from "../graph/dag";
-import { Flow, FlowFile, TaskRef } from "../graph/types";
+import { Flow, FlowFile, TaskRef, Bind } from "../graph/types";
 import { validateCanvas, ValidationResult } from "../graph/validate";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
 import { ConfirmModal } from "../components/ConfirmModal";
@@ -42,6 +42,8 @@ interface UndoSnapshot {
   edges: CanvasEdge[];
   // overrides per node id; preserved across edits.
   overrides: Record<string, TaskRef["overrides"]>;
+  // bindings per node id; input/output wiring for each task
+  bindings: Record<string, Bind | undefined>;
 }
 
 const NODE_TYPES = {
@@ -89,6 +91,7 @@ function FlowGraphInner() {
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [palette, setPalette] = useState<TaskSummary[]>([]);
+  const [logicHandlers, setLogicHandlers] = useState<LogicHandler[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [flowList, setFlowList] = useState<FlowSummary[]>([]);
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
@@ -116,6 +119,10 @@ function FlowGraphInner() {
   // Per-node TaskRef overrides, keyed by canvas node id. Compiled into the
   // emitted YAML on save.
   const [overrides, setOverrides] = useState<Record<string, TaskRef["overrides"]>>({});
+  
+  // Per-node input/output bindings, keyed by canvas node id. Compiled into the
+  // emitted YAML on save.
+  const [bindings, setBindings] = useState<Record<string, Bind | undefined>>({});
 
   const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -128,6 +135,43 @@ function FlowGraphInner() {
   const blocker = useUnsavedGuard(dirty);
   // Discard-edits confirm for the YAML-relock case (separate from navigation).
   const [yamlDiscardConfirm, setYamlDiscardConfirm] = useState(false);
+
+  // Width of the inspector/YAML side panel, in px. Persisted across sessions.
+  const [rightWidth, setRightWidth] = useState<number>(() => {
+    const v = Number(localStorage.getItem("flowRightWidth"));
+    return Number.isFinite(v) && v >= 240 ? v : 400;
+  });
+  useEffect(() => {
+    localStorage.setItem("flowRightWidth", String(rightWidth));
+  }, [rightWidth]);
+  const resizing = useRef(false);
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!resizing.current) return;
+      // Distance from the right edge of the viewport — the panel grows to the right.
+      const next = window.innerWidth - e.clientX - 40; // account for .main padding
+      const clamped = Math.min(900, Math.max(240, next));
+      setRightWidth(clamped);
+    }
+    function onUp() {
+      if (!resizing.current) return;
+      resizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    resizing.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
 
   // -------- load -----------------------------------------------------------
 
@@ -156,10 +200,12 @@ function FlowGraphInner() {
         if (cancelled) return;
         const canvas = decompile(f, layout);
         const nodeOverrides = collectOverrides(canvas, f);
+        const nodeBindings = collectBindings(canvas, f);
 
         setFilePath(path);
         setFlow(stripLayoutFromFlow(f)); // canonical state holds no layout; save() re-embeds it
         setOverrides(nodeOverrides);
+        setBindings(nodeBindings);
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setHistory([]);
@@ -170,6 +216,7 @@ function FlowGraphInner() {
     })();
 
     api.tasks().then(setPalette).catch(() => {});
+    api.logic().then((r) => setLogicHandlers(r.handlers)).catch(() => {});
     api.flows().then(setFlowList).catch(() => {});
 
     return () => {
@@ -206,6 +253,29 @@ function FlowGraphInner() {
     () => validateCanvas(rfToCanvas(nodes, edges), palette),
     [nodes, edges, palette],
   );
+
+  // Build TaskSchemaMap from palette + logic handlers for scope computation.
+  const taskSchemas: TaskSchemaMap = useMemo(() => {
+    const map: TaskSchemaMap = {};
+    for (const t of palette) {
+      if (!t.logic) continue;
+      const handler = logicHandlers.find((h) => h.name === t.logic);
+      if (!handler) continue;
+      map[t.name] = {
+        logic: handler.name,
+        inputs: flattenSchemaProps(handler.input_schema) ?? [],
+        outputs: flattenSchemaProps(handler.output_schema) ?? [],
+      };
+    }
+    return map;
+  }, [palette, logicHandlers]);
+
+  // Live task tree with current bindings applied — used for scope computation.
+  const liveFlowTasks: TaskRef[] = useMemo(() => {
+    if (!flow) return [];
+    const canvas = rfToCanvas(nodes, edges);
+    return applyBindings(flow.tasks, canvas, bindings);
+  }, [flow, nodes, edges, bindings]);
 
   // Reapply visual flags to nodes/edges every render.
   const styledNodes = useMemo(
@@ -248,8 +318,9 @@ function FlowGraphInner() {
       })),
       edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
       overrides: { ...overrides },
+      bindings: { ...bindings },
     };
-  }, [nodes, edges, overrides]);
+  }, [nodes, edges, overrides, bindings]);
 
   const commit = useCallback(
     (mutate: () => void) => {
@@ -289,9 +360,10 @@ function FlowGraphInner() {
     const compiled = safeCompile(canvas);
     if (!compiled.ok) return;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
-    const merged: Flow = { ...flow, tasks: applied };
+    const withBindings = applyBindings(applied, canvas, bindings);
+    const merged: Flow = { ...flow, tasks: withBindings };
     setYamlDraft(yaml.dump({ flows: [merged] }, { lineWidth: 100, noRefs: true }));
-  }, [nodes, edges, flow, yamlUnlocked, overrides]);
+  }, [nodes, edges, flow, yamlUnlocked, overrides, bindings]);
 
   // -------- operations -----------------------------------------------------
 
@@ -326,6 +398,11 @@ function FlowGraphInner() {
         delete next[id];
         return next;
       });
+      setBindings((cur) => {
+        const next = { ...cur };
+        delete next[id];
+        return next;
+      });
     });
     if (selectedNode === id) setSelectedNode(null);
   }
@@ -349,6 +426,15 @@ function FlowGraphInner() {
   function setNodeOverrides(nodeId: string, next: TaskRef["overrides"]) {
     commit(() =>
       setOverrides((cur) => ({
+        ...cur,
+        [nodeId]: next,
+      })),
+    );
+  }
+
+  function setNodeBindings(nodeId: string, next: Bind | undefined) {
+    commit(() =>
+      setBindings((cur) => ({
         ...cur,
         [nodeId]: next,
       })),
@@ -593,6 +679,7 @@ function FlowGraphInner() {
       })),
     );
     setOverrides(snap.overrides);
+    setBindings(snap.bindings);
     setSelectedNode(null);
     setSelectedEdge(null);
   }
@@ -606,13 +693,14 @@ function FlowGraphInner() {
     const compiled = safeCompile(canvas);
     if (!compiled.ok) return null;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
+    const withBindings = applyBindings(applied, canvas, bindings);
     const layout: Record<string, { x: number; y: number }> = {};
     for (const n of canvas.nodes) {
       layout[layoutKey(n)] = n.position;
     }
     const merged: Flow = {
       ...flow,
-      tasks: applied,
+      tasks: withBindings,
       metadata: { ...(flow.metadata ?? {}), layout },
     };
     return yaml.dump({ flows: [merged] }, { lineWidth: 100, noRefs: true });
@@ -639,10 +727,12 @@ function FlowGraphInner() {
         const embedded = readEmbeddedLayout(f);
         const canvas = decompile(stripLayoutFromFlow(f), embedded);
         const nodeOverrides = collectOverrides(canvas, f);
+        const nodeBindings = collectBindings(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
+        setBindings(nodeBindings);
       });
       setFlash(`Loaded draft "${d.label}". Not saved to disk yet.`);
     } catch (e) {
@@ -659,10 +749,12 @@ function FlowGraphInner() {
       commit(() => {
         const canvas = decompile(stripLayoutFromFlow(f));
         const nodeOverrides = collectOverrides(canvas, f);
+        const nodeBindings = collectBindings(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
+        setBindings(nodeBindings);
       });
     } catch (e) {
       setYamlError((e as Error).message);
@@ -682,6 +774,7 @@ function FlowGraphInner() {
         return;
       }
       const applied = applyOverrides(compiled.tasks, canvas, overrides);
+      const withBindings = applyBindings(applied, canvas, bindings);
       // Build the layout map once: keyed by taskName + label so a task
       // placed multiple times in the flow keeps distinct positions.
       const layout: Record<string, { x: number; y: number }> = {};
@@ -691,7 +784,7 @@ function FlowGraphInner() {
       // Layout lives in a sidecar (.jigsaw/layouts/<flow>.json), not the YAML.
       // Strip any layout that older saves embedded in metadata so the YAML
       // gets cleaned up the next time the user saves.
-      const merged: Flow = { ...stripLayoutFromFlow(flow), tasks: applied };
+      const merged: Flow = { ...stripLayoutFromFlow(flow), tasks: withBindings };
       // Read the original file and replace just our flow entry, preserving
       // any other flows that may live in the same file.
       const raw = await api.file(filePath);
@@ -806,8 +899,8 @@ function FlowGraphInner() {
         className="flow-canvas-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: showRight ? "1fr 400px" : "1fr",
-          gap: 16,
+          gridTemplateColumns: showRight ? `1fr 6px ${rightWidth}px` : "1fr",
+          gap: showRight ? 0 : 16,
         }}
       >
         <div
@@ -872,6 +965,30 @@ function FlowGraphInner() {
         </div>
 
         {showRight && (
+          <div
+            onMouseDown={startResize}
+            title="Drag to resize"
+            style={{
+              cursor: "col-resize",
+              background: "transparent",
+              position: "relative",
+              userSelect: "none",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: 2,
+                width: 2,
+                background: "var(--border)",
+              }}
+            />
+          </div>
+        )}
+
+        {showRight && (
           <aside style={{
             border: "1px solid var(--border)",
             borderRadius: 6,
@@ -888,10 +1005,27 @@ function FlowGraphInner() {
                 data={selectedNodeData}
                 taskInfo={selectedTask}
                 overrides={overrides[selectedNode]}
+                bindings={bindings[selectedNode]}
                 onChangeOverrides={(next) => setNodeOverrides(selectedNode, next)}
+                onChangeBindings={(next) => setNodeBindings(selectedNode, next)}
                 onChangeLabel={(label) => setNodeLabel(selectedNode, label)}
                 onRenameBranchSegment={(prefix, next) => renameBranchPathSegment(prefix, next)}
                 onDelete={() => deleteNode(selectedNode)}
+                taskSchemas={taskSchemas}
+                flowTasks={liveFlowTasks}
+                nodeOccurrence={(() => {
+                  // Count preceding nodes with the same taskName + branchPath
+                  let count = 0;
+                  for (const n of nodes) {
+                    if (n.id === selectedNode) break;
+                    const d = n.data as NodeData;
+                    if (
+                      d.taskName === selectedNodeData.taskName &&
+                      JSON.stringify(d.branchPath ?? null) === JSON.stringify(selectedNodeData.branchPath ?? null)
+                    ) count++;
+                  }
+                  return count;
+                })()}
               />
             )}
 
@@ -903,7 +1037,7 @@ function FlowGraphInner() {
                     className={`btn ${yamlUnlocked ? "" : "btn-primary"}`}
                     onClick={() => {
                       if (yamlUnlocked) {
-                        if (!yamlMirrorsGraph(yamlDraft, flow, nodes, edges, overrides)) {
+                        if (!yamlMirrorsGraph(yamlDraft, flow, nodes, edges, overrides, bindings)) {
                           setYamlDiscardConfirm(true);
                           return;
                         }
@@ -1066,19 +1200,29 @@ function Inspector({
   data,
   taskInfo,
   overrides,
+  bindings,
   onChangeOverrides,
+  onChangeBindings,
   onChangeLabel,
   onRenameBranchSegment,
   onDelete,
+  taskSchemas,
+  flowTasks,
+  nodeOccurrence,
 }: {
   nodeId: string;
   data: NodeData;
   taskInfo: TaskSummary | undefined;
   overrides: TaskRef["overrides"];
+  bindings: Bind | undefined;
   onChangeOverrides: (next: TaskRef["overrides"]) => void;
+  onChangeBindings: (next: Bind | undefined) => void;
   onChangeLabel: (label: string) => void;
   onRenameBranchSegment: (prefix: string[], next: string) => void;
   onDelete: () => void;
+  taskSchemas: TaskSchemaMap;
+  flowTasks: TaskRef[];
+  nodeOccurrence: number;
 }) {
   return (
     <div>
@@ -1109,6 +1253,16 @@ function Inspector({
           until this task exists under <code>tasks/</code>.
         </div>
       )}
+
+      <BindEditor
+        taskName={data.taskName}
+        bindings={bindings}
+        onChange={onChangeBindings}
+        taskSchemas={taskSchemas}
+        flowTasks={flowTasks}
+        targetBranchPath={data.branchPath}
+        targetOccurrence={nodeOccurrence}
+      />
 
       <OverridesEditor
         overrides={(overrides ?? []) as OverrideRow[]}
@@ -1209,13 +1363,15 @@ function yamlMirrorsGraph(
   nodes: Node<NodeData>[],
   edges: Edge[],
   overrides: Record<string, TaskRef["overrides"]>,
+  bindings: Record<string, Bind | undefined>,
 ): boolean {
   if (!flow) return true;
   const canvas = rfToCanvas(nodes, edges);
   const compiled = safeCompile(canvas);
   if (!compiled.ok) return draft.trim() === "";
   const applied = applyOverrides(compiled.tasks, canvas, overrides);
-  const expected = yaml.dump({ flows: [{ ...flow, tasks: applied }] }, { lineWidth: 100, noRefs: true });
+  const withBindings = applyBindings(applied, canvas, bindings);
+  const expected = yaml.dump({ flows: [{ ...flow, tasks: withBindings }] }, { lineWidth: 100, noRefs: true });
   return expected === draft;
 }
 
@@ -1339,8 +1495,13 @@ function TaskParamsEditor({ taskName }: { taskName: string }) {
 
   return (
     <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
-        <strong style={{ flex: 1 }}>Task parameters</strong>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <strong>Task parameters</strong>
+        <InfoHint>
+          Edits write to <code>{filePath || "tasks/…"}</code>. Inputs/outputs
+          are not yet editable here — use the raw editor for those.
+        </InfoHint>
+        <span style={{ flex: 1 }} />
         <button
           className="btn btn-primary"
           onClick={save}
@@ -1386,10 +1547,6 @@ function TaskParamsEditor({ taskName }: { taskName: string }) {
         <input className="input" value={task.inherits} onChange={(e) => patch("inherits", e.target.value)} placeholder="(optional)" />
       </div>
 
-      <div className="meta">
-        Edits write to <code>{filePath || "tasks/…"}</code>. Inputs/outputs are
-        not yet editable here — use the raw editor for those.
-      </div>
     </div>
   );
 }
@@ -1599,6 +1756,274 @@ function textToKV(text: string): Record<string, unknown> {
     out[k] = v;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// BindEditor — edit input/output bindings for a task
+// ---------------------------------------------------------------------------
+
+function BindEditor({
+  taskName,
+  bindings,
+  onChange,
+  taskSchemas,
+  flowTasks,
+  targetBranchPath,
+  targetOccurrence,
+}: {
+  taskName: string;
+  bindings: Bind | undefined;
+  onChange: (next: Bind | undefined) => void;
+  taskSchemas: TaskSchemaMap;
+  flowTasks: TaskRef[];
+  targetBranchPath: string[] | undefined;
+  targetOccurrence: number;
+}) {
+  const [logicHandler, setLogicHandler] = useState<{
+    name: string;
+    input_schema: { name: string; type: string }[] | null;
+    output_schema: { name: string; type: string }[] | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  // Fields in "custom text input" mode (user chose the Custom… option).
+  // We also auto-enter custom mode if the current value isn't in the scope list.
+  const [customFields, setCustomFields] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setLoading(true);
+    api.tasks()
+      .then((tasks) => {
+        const task = tasks.find((t) => t.name === taskName);
+        if (!task || !task.logic) {
+          setLogicHandler(null);
+          setLoading(false);
+          return;
+        }
+        return api.logic().then((logicData) => {
+          const handler = logicData.handlers.find((h) => h.name === task.logic);
+          if (!handler) {
+            setLogicHandler(null);
+          } else {
+            setLogicHandler({
+              name: handler.name,
+              input_schema: flattenSchemaProps(handler.input_schema),
+              output_schema: flattenSchemaProps(handler.output_schema),
+            });
+          }
+          setLoading(false);
+        });
+      })
+      .catch(() => {
+        setLogicHandler(null);
+        setLoading(false);
+      });
+  }, [taskName]);
+
+  // Compute available scope variables at this node's position in the flow.
+  const scope: ScopeVar[] = useMemo(
+    () => computeScopeAtNode(flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas),
+    [flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas],
+  );
+
+  // Quick lookup map: scope key → ScopeVar (for collision detection).
+  const scopeMap = useMemo(() => {
+    const m = new Map<string, ScopeVar>();
+    for (const sv of scope) m.set(sv.name, sv);
+    return m;
+  }, [scope]);
+
+  function updateIn(field: string, scopeKey: string) {
+    const newIn = { ...(bindings?.in ?? {}) };
+    if (scopeKey.trim() === "") {
+      delete newIn[field];
+    } else {
+      newIn[field] = scopeKey;
+    }
+    onChange({
+      in: Object.keys(newIn).length > 0 ? newIn : undefined,
+      out: bindings?.out,
+    });
+  }
+
+  function updateOut(field: string, scopeKey: string) {
+    const newOut = { ...(bindings?.out ?? {}) };
+    if (scopeKey.trim() === "") {
+      delete newOut[field];
+    } else {
+      newOut[field] = scopeKey;
+    }
+    onChange({
+      in: bindings?.in,
+      out: Object.keys(newOut).length > 0 ? newOut : undefined,
+    });
+  }
+
+  // Returns true if a field should render as a text input rather than a dropdown.
+  // This is the case when: (a) user explicitly toggled custom mode, or (b) the
+  // current bound value is non-empty and not found in the scope list.
+  function isCustomMode(fieldName: string, currentValue: string): boolean {
+    if (customFields.has(fieldName)) return true;
+    if (currentValue !== "" && !scope.some((sv) => sv.name === currentValue)) return true;
+    return false;
+  }
+
+  function enterCustomMode(fieldName: string) {
+    setCustomFields((prev) => new Set(prev).add(fieldName));
+  }
+
+  function exitCustomMode(fieldName: string) {
+    setCustomFields((prev) => {
+      const next = new Set(prev);
+      next.delete(fieldName);
+      return next;
+    });
+  }
+
+  if (loading) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <strong>Input/Output Bindings</strong>
+        <div className="meta">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!logicHandler || (!logicHandler.input_schema && !logicHandler.output_schema)) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <strong>Input/Output Bindings</strong>
+        <div className="meta">No schema available for this task's logic handler.</div>
+      </div>
+    );
+  }
+
+  const hasInputs = logicHandler.input_schema && logicHandler.input_schema.length > 0;
+  const hasOutputs = logicHandler.output_schema && logicHandler.output_schema.length > 0;
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <strong>Input/Output Bindings</strong>
+        <InfoHint>
+          Map handler fields to scope variables. Leave blank to use the field
+          name directly.
+        </InfoHint>
+      </div>
+
+      {scope.length === 0 && hasInputs && (
+        <div className="meta" style={{ marginBottom: 8 }}>
+          No upstream scope variables available at this position. Inputs will be read from request parameters by their handler-declared names.
+        </div>
+      )}
+
+      {hasInputs && (
+        <div style={{ marginBottom: 12 }}>
+          <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Inputs (read from scope)</div>
+          {logicHandler.input_schema!.map((field) => {
+            const currentValue = bindings?.in?.[field.name] ?? "";
+            const custom = isCustomMode(field.name, currentValue);
+            const compatibleVars = scope.filter((sv) => typesCompatible(sv.type, field.type));
+            return (
+              <div key={field.name} style={{ marginBottom: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center" }}>
+                  <label className="meta" title={`Type: ${field.type}`}>{field.name}</label>
+                  {custom ? (
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input
+                        className="input"
+                        placeholder={field.name}
+                        value={currentValue}
+                        onChange={(e) => updateIn(field.name, e.target.value)}
+                        style={{ fontSize: 12, flex: 1 }}
+                      />
+                      <button
+                        className="btn"
+                        style={{ fontSize: 11, padding: "0 6px" }}
+                        title="Back to dropdown"
+                        onClick={() => {
+                          exitCustomMode(field.name);
+                          // Clear value so it doesn't auto-re-enter custom mode
+                          if (currentValue !== "" && !scope.some((sv) => sv.name === currentValue)) {
+                            updateIn(field.name, "");
+                          }
+                        }}
+                      >
+                        ↩
+                      </button>
+                    </div>
+                  ) : (
+                    <select
+                      className="input"
+                      value={currentValue}
+                      onChange={(e) => {
+                        if (e.target.value === "__custom__") {
+                          enterCustomMode(field.name);
+                        } else {
+                          updateIn(field.name, e.target.value);
+                        }
+                      }}
+                      style={{ fontSize: 12 }}
+                    >
+                      <option value="">— use "{field.name}" from scope —</option>
+                      {compatibleVars.map((sv) => (
+                        <option key={sv.name} value={sv.name}>
+                          {sv.name} ({sv.type})
+                        </option>
+                      ))}
+                      {compatibleVars.length < scope.length && (
+                        <optgroup label="Other (type mismatch)">
+                          {scope
+                            .filter((sv) => !typesCompatible(sv.type, field.type))
+                            .map((sv) => (
+                              <option key={sv.name} value={sv.name}>
+                                {sv.name} ({sv.type})
+                              </option>
+                            ))}
+                        </optgroup>
+                      )}
+                      <option value="__custom__">Custom…</option>
+                    </select>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {hasOutputs && (
+        <div style={{ marginBottom: 12 }}>
+          <div className="meta" style={{ marginBottom: 4, fontWeight: 600 }}>Outputs (write to scope)</div>
+          {logicHandler.output_schema!.map((field) => {
+            const currentValue = bindings?.out?.[field.name] ?? "";
+            const publishedName = currentValue.trim() !== "" ? currentValue.trim() : field.name;
+            const existing = scopeMap.get(publishedName);
+            const hasCollision = existing !== undefined && !typesCompatible(existing.type, field.type);
+            return (
+              <div key={field.name} style={{ marginBottom: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center" }}>
+                  <label className="meta" title={`Type: ${field.type}`}>{field.name}</label>
+                  <input
+                    className="input"
+                    placeholder={field.name}
+                    value={currentValue}
+                    onChange={(e) => updateOut(field.name, e.target.value)}
+                    style={{ fontSize: 12, borderColor: hasCollision ? "var(--warn)" : undefined }}
+                  />
+                </div>
+                {hasCollision && (
+                  <div style={{ color: "var(--warn)", fontSize: 11, marginTop: 2, marginLeft: 108, lineHeight: 1.4 }}>
+                    ⚠ "{publishedName}" already in scope as {existing!.type}; this task emits {field.type}.
+                    Rename to avoid silent overwrite with a different type.
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1832,6 +2257,71 @@ function applyOverrides(
       if (r.name) {
         const q = queues[r.name];
         if (q && q.length > 0) return { ...r, overrides: q.shift() };
+        return r;
+      }
+      if (r.parallel) {
+        return {
+          ...r,
+          parallel: {
+            ...r.parallel,
+            branches: r.parallel.branches.map((b) => ({ ...b, tasks: attach(b.tasks) })),
+          },
+        };
+      }
+      return r;
+    });
+  }
+  return attach(tasks);
+}
+
+// collectBindings walks the decompiled flow and pairs each TaskRef's
+// bind data with the canvas node that represents it.
+function collectBindings(canvas: Canvas, flow: Flow): Record<string, Bind | undefined> {
+  const byName: Record<string, (Bind | undefined)[]> = {};
+  walk(flow.tasks);
+  function walk(refs: TaskRef[]) {
+    for (const r of refs) {
+      if (r.name) {
+        (byName[r.name] ||= []).push(r.bind);
+      } else if (r.parallel) {
+        for (const b of r.parallel.branches) walk(b.tasks);
+      }
+    }
+  }
+  const out: Record<string, Bind | undefined> = {};
+  for (const n of canvas.nodes) {
+    const stack = byName[n.taskName];
+    if (stack && stack.length > 0) {
+      out[n.id] = stack.shift();
+    }
+  }
+  return out;
+}
+
+// applyBindings reattaches per-node bind data to the freshly compiled TaskRef
+// tree by matching on task name + occurrence order.
+function applyBindings(
+  tasks: TaskRef[],
+  canvas: Canvas,
+  bindings: Record<string, Bind | undefined>,
+): TaskRef[] {
+  // Build a queue per task name in the order nodes appear in the canvas.
+  const queues: Record<string, (Bind | undefined)[]> = {};
+  for (const n of canvas.nodes) {
+    const b = bindings[n.id];
+    (queues[n.taskName] ||= []).push(b);
+  }
+  function attach(refs: TaskRef[]): TaskRef[] {
+    return refs.map((r) => {
+      if (r.name) {
+        const q = queues[r.name];
+        if (q && q.length > 0) {
+          const b = q.shift();
+          // Only attach bind if it has actual data
+          if (b && (Object.keys(b.in ?? {}).length > 0 || Object.keys(b.out ?? {}).length > 0)) {
+            return { ...r, bind: b };
+          }
+        }
         return r;
       }
       if (r.parallel) {
@@ -2170,3 +2660,234 @@ function TaskPalette({
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Scope computation — mirrors the Go validator's scope-walk behaviour so the
+// UI can show which scope keys are available at each node's position.
+// ---------------------------------------------------------------------------
+
+interface ScopeVar {
+  name: string;   // scope key as visible to the consumer
+  type: string;   // JSON-schema-style type label
+  source: string; // task name that produced it (for tooltip)
+}
+
+interface TaskSchemaMap {
+  [taskName: string]: {
+    logic?: string;
+    inputs: { name: string; type: string }[];
+    outputs: { name: string; type: string }[];
+  };
+}
+
+// computeScopeAtNode walks flowTasks in order, accumulating the scope that
+// would be available *before* the identified target task executes.
+//
+// Target is identified by (taskName, branchPath, occurrence) because the
+// same task can be placed multiple times with the same branchPath; occurrence
+// is a 0-based counter that counts how many times we've already seen a node
+// with matching (taskName, branchPath) before the target one.
+function computeScopeAtNode(
+  flowTasks: TaskRef[],
+  targetName: string,
+  targetBranchPath: string[] | undefined,
+  targetOccurrence: number,
+  taskSchemas: TaskSchemaMap,
+): ScopeVar[] {
+  // Mutable counter of remaining occurrences to skip.
+  let remaining = targetOccurrence;
+  let found = false;
+
+  const scope = new Map<string, ScopeVar>();
+
+  // Returns true if we should stop (we've reached the target).
+  function walkTasks(refs: TaskRef[], branchPath: string[]): boolean {
+    for (const ref of refs) {
+      if (found) return true;
+
+      if (ref.name) {
+        // Check if this is the target node.
+        const bpMatch =
+          JSON.stringify(branchPath.length > 0 ? branchPath : undefined) ===
+          JSON.stringify(targetBranchPath && targetBranchPath.length > 0 ? targetBranchPath : undefined);
+
+        if (ref.name === targetName && bpMatch) {
+          if (remaining === 0) {
+            found = true;
+            return true;
+          }
+          remaining--;
+        }
+
+        // Publish this task's outputs into scope (using bind.out renames).
+        const schema = taskSchemas[ref.name];
+        if (schema) {
+          for (const out of schema.outputs) {
+            const publishedName = ref.bind?.out?.[out.name] ?? out.name;
+            scope.set(publishedName, { name: publishedName, type: out.type, source: ref.name });
+          }
+        }
+      } else if (ref.parallel) {
+        // For each branch: fork scope, walk branch, collect additions.
+        // If target is inside a branch: return true immediately.
+        // Otherwise: publish branch additions under <branchLabel>.<key>.
+        const beforeKeys = new Set(scope.keys());
+
+        let targetInBranch = false;
+        for (const branch of ref.parallel.branches) {
+          if (found) return true;
+          const branchLabel = branch.label;
+          const childPath = [...branchPath, branchLabel];
+
+          // Clone scope for this branch walk.
+          const branchScope = new Map<string, ScopeVar>(scope);
+          const savedScope = new Map<string, ScopeVar>(scope);
+
+          // Temporarily replace scope with branch scope.
+          scope.clear();
+          for (const [k, v] of branchScope) scope.set(k, v);
+
+          const hitTarget = walkTasks(branch.tasks, childPath);
+
+          if (hitTarget) {
+            // Target is inside this branch — scope is already correct (branch's
+            // local scope up to the target). Return immediately.
+            targetInBranch = true;
+            break;
+          }
+
+          // Collect keys added by this branch.
+          const branchAdditions: ScopeVar[] = [];
+          for (const [k, v] of scope) {
+            if (!beforeKeys.has(k)) {
+              branchAdditions.push(v);
+            }
+          }
+
+          // Restore parent scope and publish branch additions namespaced.
+          scope.clear();
+          for (const [k, v] of savedScope) scope.set(k, v);
+
+          for (const sv of branchAdditions) {
+            const namespacedKey = `${branchLabel}.${sv.name}`;
+            scope.set(namespacedKey, { name: namespacedKey, type: sv.type, source: sv.source });
+          }
+        }
+
+        if (targetInBranch) return true;
+      }
+    }
+    return false;
+  }
+
+  walkTasks(flowTasks, []);
+  return Array.from(scope.values());
+}
+
+// typesCompatible returns true when type a and b are assignment-compatible.
+// Exact equality is sufficient for most cases; "any"/empty is a wildcard.
+function typesCompatible(a: string, b: string): boolean {
+  if (!a || a === "any" || !b || b === "any") return true;
+  return a === b;
+}
+
+function flattenSchemaProps(
+  schema: JSONSchema | null | undefined,
+): { name: string; type: string }[] | null {
+  if (!schema) return null;
+  const root = resolveSchemaRef(schema, schema);
+  const props = root.properties || {};
+  const entries = Object.entries(props);
+  if (entries.length === 0) return null;
+  return entries.map(([name, sub]) => ({
+    name,
+    type: schemaTypeLabel(resolveSchemaRef(sub, schema)),
+  }));
+}
+
+function resolveSchemaRef(node: JSONSchema, root: JSONSchema): JSONSchema {
+  if (!node.$ref) return node;
+  const path = node.$ref.replace(/^#\//, "").split("/");
+  let cur: any = root;
+  for (const p of path) {
+    if (cur == null) return node;
+    cur = cur[p];
+  }
+  return cur || node;
+}
+
+// InfoHint — small (i) icon that reveals a hint on hover or click. Used to
+// keep verbose helper text out of the way of the form fields.
+function InfoHint({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span
+      style={{ position: "relative", display: "inline-flex", alignItems: "center" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        title="More info"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 16,
+          height: 16,
+          borderRadius: "50%",
+          border: "1px solid var(--border-strong)",
+          background: "var(--panel-2)",
+          color: "var(--text-dim)",
+          fontSize: 11,
+          fontStyle: "italic",
+          fontFamily: "serif",
+          lineHeight: 1,
+          cursor: "help",
+          padding: 0,
+        }}
+      >
+        i
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            marginTop: 4,
+            zIndex: 50,
+            maxWidth: 280,
+            padding: "6px 8px",
+            background: "var(--panel-2)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 4,
+            color: "var(--text-dim)",
+            fontSize: 12,
+            lineHeight: 1.4,
+            whiteSpace: "normal",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+          }}
+        >
+          {children}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function schemaTypeLabel(s: JSONSchema): string {
+  if (!s) return "any";
+  if (Array.isArray(s.type)) return s.type.join(" | ");
+  if (s.type === "array") {
+    const item = s.items ? schemaTypeLabel(s.items) : "any";
+    return `${item}[]`;
+  }
+  if (s.type === "object" && s.properties) {
+    const names = Object.keys(s.properties);
+    return names.length > 0 ? `{ ${names.join(", ")} }` : "object";
+  }
+  return (s.type as string) || (s.enum ? "enum" : "any");
+}

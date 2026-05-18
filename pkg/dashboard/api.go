@@ -161,8 +161,7 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 			"logic":             task.Logic,
 			"logic_implemented": implemented || task.Logic == "",
 			"provider":          task.Provider,
-			"inputs":            len(task.Inputs),
-			"outputs":           len(task.Outputs),
+			"params":            len(task.Params),
 			"inherits":          task.Inherits,
 		})
 	}
@@ -263,8 +262,11 @@ func (d *Dashboard) handleLogic(w http.ResponseWriter, r *http.Request) {
 	for _, s := range specs {
 		out = append(out, map[string]any{
 			"name":          s.Name,
+			"description":   s.Description,
+			"version":       s.Version,
 			"input_schema":  s.InputSchema,
 			"output_schema": s.OutputSchema,
+			"params_schema": s.ParamsSchema,
 			"used_by":       usage[s.Name],
 		})
 	}
@@ -344,8 +346,11 @@ func (d *Dashboard) loadLogicSpecs() []configlang.LogicSpec {
 	for i, l := range m.Logic {
 		specs[i] = configlang.LogicSpec{
 			Name:         l.Name,
+			Description:  l.Description,
+			Version:      l.Version,
 			InputSchema:  l.InputSchema,
 			OutputSchema: l.OutputSchema,
+			ParamsSchema: l.ParamsSchema,
 		}
 	}
 	return specs

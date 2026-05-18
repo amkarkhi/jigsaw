@@ -101,6 +101,9 @@ export interface EndpointSummary {
   flows: { sub: number; flow: string }[];
 }
 
+// FieldDef is retained for legacy UI surfaces (TaskDetail form, Tasks list)
+// that still render the pre-refactor task shape. New code should consume
+// JSONSchema directly.
 export interface FieldDef {
   name: string;
   type: string;
@@ -110,18 +113,41 @@ export interface FieldDef {
   field?: string;
 }
 
+// JSONSchema mirrors the subset of github.com/invopop/jsonschema we render.
+// We only consume what we render: type, properties, required, description,
+// items (for arrays), and nested objects.
+export interface JSONSchema {
+  type?: string | string[];
+  description?: string;
+  properties?: Record<string, JSONSchema>;
+  required?: string[];
+  items?: JSONSchema;
+  additionalProperties?: boolean | JSONSchema;
+  enum?: unknown[];
+  default?: unknown;
+  $ref?: string;
+  $defs?: Record<string, JSONSchema>;
+  definitions?: Record<string, JSONSchema>;
+  format?: string;
+  title?: string;
+}
+
 export interface FullTask {
   name: string;
   description?: string;
   version?: string;
+  // Legacy fields surfaced by older UI screens. The backend no longer
+  // populates them after the schema-driven refactor; they remain typed
+  // here so screens that still reference them keep compiling.
   label?: string;
-  inherits?: string;
   inputs?: FieldDef[];
   outputs?: FieldDef[];
+  inherits?: string;
   provider?: string;
   logic?: string;
   timeout?: number;
   retry?: number;
+  params?: Record<string, unknown>;
   fallback?: unknown;
   metadata?: Record<string, unknown>;
 }
@@ -133,8 +159,11 @@ export interface TaskDetail {
 
 export interface LogicHandler {
   name: string;
-  input_schema: FieldDef[] | null;
-  output_schema: FieldDef[] | null;
+  description?: string;
+  version?: string;
+  input_schema: JSONSchema | null;
+  output_schema: JSONSchema | null;
+  params_schema?: JSONSchema | null;
   used_by: string[];
 }
 

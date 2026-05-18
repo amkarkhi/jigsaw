@@ -11,18 +11,19 @@ import (
 )
 
 // Fork creates a branch-local ExecutionContext from a parent. The branch may
-// freely mutate its own maps and scalar fields without racing siblings. The
-// parent's TaskOutputs / Labels / Versions are snapshotted (shallow copy) so
-// the branch starts with the same visibility the parent had at fork time.
+// freely mutate its own Scope without affecting siblings. Reads in the branch
+// first check the branch's local Scope, then fall back to the parent chain
+// (parent.ScopeGet).
 //
-// `goCtx` should be the goroutine-cancellation context for the branch (e.g.
-// the gctx from context.WithCancel used by the parallel executor).
+// After the branch completes, call Merge to publish every key the branch wrote
+// into the parent's Scope under "<branchLabel>.<key>".
+//
+// `goCtx` is the goroutine-cancellation context for the branch.
 func Fork(parent *types.ExecutionContext, branchLabel string, goCtx context.Context) *types.ExecutionContext {
 	branchPath := append(append([]string{}, parent.BranchPath...), branchLabel)
-
 	branchLogger := parent.Logger.With().Str("branch", branchLabel).Logger()
 
-	return &types.ExecutionContext{
+	child := &types.ExecutionContext{
 		RequestID:   parent.RequestID,
 		FlowName:    parent.FlowName,
 		FlowVersion: parent.FlowVersion,
@@ -34,54 +35,35 @@ func Fork(parent *types.ExecutionContext, branchLabel string, goCtx context.Cont
 		Logger:      branchLogger,
 		Context:     goCtx,
 		BranchPath:  branchPath,
-		TaskOutputs: cloneMap(parent.TaskOutputs),
+		Scope:       make(map[string]types.ScopedVar),
 		Metadata:    cloneMap(parent.Metadata),
 		Versions:    cloneStringMap(parent.Versions),
-		Labels:      cloneLabels(parent.Labels),
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
+	// Expose the parent for read fall-through. This field is unexported from
+	// the types package so it must be set via SetParentScope.
+	types.SetParentScope(child, parent)
+	return child
 }
 
-// Merge folds the new outputs / labels / versions produced inside `branch`
-// back into `parent`. Sibling branches cannot collide on task outputs because
-// SetTaskOutput qualifies the key with the branch path. Labels appended in
-// the branch are appended to the parent's index.
+// Merge folds the outputs produced inside `branch` back into `parent`. Every
+// key the branch wrote to its local Scope is published to the parent under
+// "<branchLabel>.<key>", where branchLabel is the last element of
+// branch.BranchPath. Version entries are merged directly (no namespacing).
 func Merge(parent, branch *types.ExecutionContext) {
-	for k, v := range branch.TaskOutputs {
-		parent.TaskOutputs[k] = v
+	if len(branch.BranchPath) == 0 {
+		return
+	}
+	branchLabel := branch.BranchPath[len(branch.BranchPath)-1]
+
+	for k, v := range branch.Scope {
+		parent.ScopePut(branchLabel+"."+k, v)
 	}
 	for k, v := range branch.Versions {
 		parent.Versions[k] = v
 	}
-	for label, branchProducers := range branch.Labels {
-		parentProducers := parent.Labels[label]
-		// Only carry over entries that the branch added (not the snapshotted
-		// parent entries). Identity by branch path + task name.
-		existing := make(map[string]struct{}, len(parentProducers))
-		for _, p := range parentProducers {
-			existing[producerKey(p)] = struct{}{}
-		}
-		for _, p := range branchProducers {
-			if _, seen := existing[producerKey(p)]; seen {
-				continue
-			}
-			parentProducers = append(parentProducers, p)
-		}
-		if parent.Labels == nil {
-			parent.Labels = make(types.LabelIndex)
-		}
-		parent.Labels[label] = parentProducers
-	}
 	parent.UpdatedAt = time.Now()
-}
-
-func producerKey(p types.LabeledProducer) string {
-	out := p.TaskName
-	for _, b := range p.BranchPath {
-		out = b + "/" + out
-	}
-	return out
 }
 
 func cloneMap(in map[string]any) map[string]any {
@@ -100,34 +82,28 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneLabels(in types.LabelIndex) types.LabelIndex {
-	out := make(types.LabelIndex, len(in))
-	for k, v := range in {
-		dup := make([]types.LabeledProducer, len(v))
-		copy(dup, v)
-		out[k] = dup
-	}
-	return out
-}
-
-// New creates a new execution context
+// New creates a new root execution context. The Scope is seeded with request
+// parameters so that the first task's Bind map can reference them directly.
 func New(ctx context.Context, flowName string, sub int, params map[string]any, headers map[string]string) *types.ExecutionContext {
 	execCtx := &types.ExecutionContext{
-		RequestID:   generateRequestID(),
-		FlowName:    flowName,
-		Sub:         sub,
-		Parameters:  params,
-		Headers:     headers,
-		TaskOutputs: make(map[string]any),
-		Metadata:    make(map[string]any),
-		Versions:    make(map[string]string),
-		Labels:      make(types.LabelIndex),
-		Context:     ctx,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		RequestID:  generateRequestID(),
+		FlowName:   flowName,
+		Sub:        sub,
+		Parameters: params,
+		Headers:    headers,
+		Scope:      make(map[string]types.ScopedVar),
+		Metadata:   make(map[string]any),
+		Versions:   make(map[string]string),
+		Context:    ctx,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
-	// Extract tag from parameters if present
+	// Seed scope from request parameters.
+	for k, v := range params {
+		execCtx.ScopePut(k, types.ScopedVar{Value: v, Type: jsonTypeOf(v)})
+	}
+
 	if tag, ok := params["tag"].(string); ok {
 		execCtx.Tag = tag
 	}
@@ -192,7 +168,6 @@ func matchCondition(execCtx *types.ExecutionContext, condition map[string]any) b
 		case "sub":
 			actualValue = execCtx.Sub
 		default:
-			// Check in headers
 			if val, ok := execCtx.Headers[key]; ok {
 				actualValue = val
 			} else if val, ok := execCtx.Parameters[key]; ok {
@@ -210,4 +185,27 @@ func matchCondition(execCtx *types.ExecutionContext, condition map[string]any) b
 	}
 
 	return true
+}
+
+// jsonTypeOf returns a JSON-schema-style type string for a Go value.
+func jsonTypeOf(v any) string {
+	if v == nil {
+		return "null"
+	}
+	switch v.(type) {
+	case bool:
+		return "boolean"
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "object"
+	}
 }
