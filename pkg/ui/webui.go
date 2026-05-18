@@ -156,8 +156,7 @@ func (w *WebUI) handleTasks(c *gin.Context) {
 			"logic":             task.Logic,
 			"logic_implemented": logicImplemented,
 			"provider":          task.Provider,
-			"input_count":       len(task.Inputs),
-			"output_count":      len(task.Outputs),
+			"param_count":       len(task.Params),
 			"inherits":          task.Inherits,
 		})
 	}
@@ -182,8 +181,7 @@ func (w *WebUI) handleTaskDetail(c *gin.Context) {
 		"logic":             task.Logic,
 		"logic_implemented": logicImplemented,
 		"provider":          task.Provider,
-		"inputs":            task.Inputs,
-		"outputs":           task.Outputs,
+		"params":            task.Params,
 		"fallback":          task.Fallback,
 		"timeout":           task.Timeout,
 		"retry":             task.Retry,

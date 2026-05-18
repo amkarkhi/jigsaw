@@ -21,17 +21,17 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/engine"
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/invopop/jsonschema"
 )
 
 // DefaultManifestPath is the conventional location, relative to the config root.
 const DefaultManifestPath = ".jigsaw/symbols.json"
 
 // SchemaVersion is bumped when the on-disk format changes incompatibly.
-const SchemaVersion = "1"
+const SchemaVersion = "2"
 
 // Manifest is the on-disk representation of a consumer binary's registered
-// symbols. It is the only contract between consumer binaries and the Jigsaw
-// CLI tooling.
+// symbols.
 type Manifest struct {
 	Version     string     `json:"version"`
 	GeneratedAt time.Time  `json:"generated_at"`
@@ -40,27 +40,25 @@ type Manifest struct {
 	Providers   []Provider `json:"providers"`
 }
 
-// Logic describes one registered logic handler. InputSchema/OutputSchema are
-// optional; when present they enable schema-level cross-checking of every
-// task that references this handler.
+// Logic describes one registered logic handler. InputSchema/OutputSchema/
+// ParamsSchema are full JSON Schema objects reflected from the handler's typed
+// structs.
 type Logic struct {
-	Name         string           `json:"name"`
-	Description  string           `json:"description,omitempty"`
-	Version      string           `json:"version,omitempty"`
-	InputSchema  []types.FieldDef `json:"input_schema,omitempty"`
-	OutputSchema []types.FieldDef `json:"output_schema,omitempty"`
+	Name         string             `json:"name"`
+	Description  string             `json:"description,omitempty"`
+	Version      string             `json:"version,omitempty"`
+	InputSchema  *jsonschema.Schema `json:"input_schema,omitempty"`
+	OutputSchema *jsonschema.Schema `json:"output_schema,omitempty"`
+	ParamsSchema *jsonschema.Schema `json:"params_schema,omitempty"`
 }
 
-// Provider describes one configured provider. Today this is sourced from the
-// config (not from runtime registration), because providers are declarative.
+// Provider describes one configured provider.
 type Provider struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
 
-// BuildFromEngine constructs a Manifest from a live engine + config. This is
-// the entry point consumer binaries call from their main(), typically once
-// at startup or behind a --dump-symbols flag.
+// BuildFromEngine constructs a Manifest from a live engine + config.
 func BuildFromEngine(eng *engine.Engine, cfg *types.Config, binary string) *Manifest {
 	m := &Manifest{
 		Version:     SchemaVersion,
@@ -75,6 +73,7 @@ func BuildFromEngine(eng *engine.Engine, cfg *types.Config, binary string) *Mani
 			Version:      info.Version,
 			InputSchema:  info.InputSchema,
 			OutputSchema: info.OutputSchema,
+			ParamsSchema: info.ParamsSchema,
 		})
 	}
 	sort.Slice(m.Logic, func(i, j int) bool { return m.Logic[i].Name < m.Logic[j].Name })
@@ -110,7 +109,7 @@ func Write(path string, m *Manifest) error {
 }
 
 // Read loads a manifest from path. Returns (nil, nil) if the file does not
-// exist — callers should treat absence as "no signal" rather than an error.
+// exist.
 func Read(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -129,8 +128,7 @@ func Read(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// LogicNames returns the names of all registered logic handlers, useful as a
-// drop-in for engine.ListLogicHandlers().
+// LogicNames returns the names of all registered logic handlers.
 func (m *Manifest) LogicNames() []string {
 	if m == nil {
 		return nil
@@ -142,8 +140,7 @@ func (m *Manifest) LogicNames() []string {
 	return names
 }
 
-// Age returns how long ago the manifest was generated. Useful for surfacing
-// staleness warnings in the UI.
+// Age returns how long ago the manifest was generated.
 func (m *Manifest) Age() time.Duration {
 	if m == nil {
 		return 0
@@ -154,20 +151,6 @@ func (m *Manifest) Age() time.Duration {
 // DumpToFile is the one-liner consumers wire into their own `main` to expose
 // a --dump-symbols flag. Builds a manifest from the engine + config and
 // writes it under <configPath>/.jigsaw/symbols.json.
-//
-// Recommended usage from a consumer binary:
-//
-//	import "github.com/amkarkhi/jigsaw/pkg/symbols"
-//
-//	if *dumpSymbols {
-//	    if err := symbols.DumpToFile(eng, cfg, configPath, "myapp"); err != nil {
-//	        log.Fatal(err)
-//	    }
-//	    return
-//	}
-//
-// `binary` is the label that lands in the manifest's `binary` field (for
-// debugging which consumer produced it). Pass your program name.
 func DumpToFile(eng *engine.Engine, cfg *types.Config, configPath, binary string) error {
 	m := BuildFromEngine(eng, cfg, binary)
 	return Write(filepath.Join(configPath, DefaultManifestPath), m)

@@ -2,9 +2,17 @@ module git.digikala.com/bigdata/search-service/jig-search
 
 go 1.24.4
 
-replace github.com/amkarkhi/jigsaw => /Users/amk/amin/jigsaw
+replace github.com/amkarkhi/jigsaw => ../../../jigsaw
 
 require github.com/amkarkhi/jigsaw v0.0.0-00010101000000-000000000000
+
+require (
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
+	github.com/buger/jsonparser v1.1.2 // indirect
+	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
+	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
+)
 
 require (
 	github.com/bytedance/sonic v1.11.6 // indirect

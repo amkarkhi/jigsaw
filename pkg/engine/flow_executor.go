@@ -21,12 +21,20 @@ type FlowExecutor struct {
 }
 
 // NewFlowExecutor creates a new flow executor.
-func NewFlowExecutor(config *types.Config, logger zerolog.Logger, logicRegistry *LogicRegistry) *FlowExecutor {
+func NewFlowExecutor(config *types.Config, logger zerolog.Logger, reg *logicRegistry) *FlowExecutor {
 	return &FlowExecutor{
 		config:       config,
-		taskExecutor: NewTaskExecutor(config, logger, logicRegistry),
+		taskExecutor: NewTaskExecutor(config, logger, reg),
 		logger:       logger,
 	}
+}
+
+// NewDryRunFlowExecutor creates a flow executor with an empty logic registry.
+// Tasks whose logic is not registered echo their inputs back with a
+// _logic_not_implemented marker, which is useful for sandbox / dry-run
+// execution without touching real backends.
+func NewDryRunFlowExecutor(config *types.Config, logger zerolog.Logger) *FlowExecutor {
+	return NewFlowExecutor(config, logger, newLogicRegistry())
 }
 
 // Execute runs a flow end-to-end against the given execution context.
@@ -70,12 +78,7 @@ func (f *FlowExecutor) Execute(execCtx *types.ExecutionContext, flow *types.Flow
 }
 
 // executeTaskList walks an ordered list of task refs sequentially. Parallel
-// task refs delegate to executeParallel. Used at the top level of a flow and
-// recursively inside each parallel branch.
-//
-// When updateCurrentStep is true, flowExec.CurrentStep is advanced as we
-// traverse — only the top-level call passes true; nested branch calls leave
-// the parent's step counter alone.
+// task refs delegate to executeParallel.
 func (f *FlowExecutor) executeTaskList(
 	execCtx *types.ExecutionContext,
 	tasks []types.TaskRef,
@@ -91,7 +94,6 @@ func (f *FlowExecutor) executeTaskList(
 			if err := f.executeParallel(execCtx, taskRef.Parallel, flowExec); err != nil {
 				return err
 			}
-			execCtx.LastOutput = nil
 			continue
 		}
 
@@ -102,8 +104,7 @@ func (f *FlowExecutor) executeTaskList(
 	return nil
 }
 
-// executeSingleTask handles one TaskRef (overrides, lookup, execution,
-// fallback-continue policy). Mirrors the original sequential logic.
+// executeSingleTask handles one TaskRef.
 func (f *FlowExecutor) executeSingleTask(
 	execCtx *types.ExecutionContext,
 	taskRef types.TaskRef,
@@ -128,20 +129,10 @@ func (f *FlowExecutor) executeSingleTask(
 
 	task, ok := f.config.Tasks[actualTaskName]
 	if !ok {
-		return fmt.Errorf("task '%s' not found", actualTaskName)
+		return fmt.Errorf("task %q not found", actualTaskName)
 	}
 
-	// TaskRef.Label is a per-placement override. Clone the task so the
-	// label change doesn't leak into other placements that share the same
-	// underlying Task.
-	effectiveTask := task
-	if taskRef.Label != "" {
-		clone := *task
-		clone.Label = taskRef.Label
-		effectiveTask = &clone
-	}
-
-	taskExec, err := f.taskExecutor.Execute(execCtx, effectiveTask)
+	taskExec, err := f.taskExecutor.Execute(execCtx, task, taskRef)
 	flowExec.Tasks = append(flowExec.Tasks, taskExec)
 
 	if err != nil {
@@ -156,11 +147,6 @@ func (f *FlowExecutor) executeSingleTask(
 
 // executeParallel runs all branches concurrently. Each branch gets its own
 // forked ExecutionContext; results merge back into the parent serially.
-//
-// Failure policy is governed by block.OnBranchFailure:
-//   - "continue" (default): all branches run to completion; their errors are
-//     joined via errors.Join and returned only if every branch failed.
-//   - "cancel": first hard failure cancels sibling goroutines via gctx.
 func (f *FlowExecutor) executeParallel(
 	execCtx *types.ExecutionContext,
 	block *types.ParallelBlock,
@@ -189,8 +175,6 @@ func (f *FlowExecutor) executeParallel(
 		childCtx := jigsawctx.Fork(execCtx, branch.Label, gctx)
 		branchCtxs[i] = childCtx
 
-		// Each branch carries a local FlowExecution to keep TaskExecution
-		// appends out of the parent's slice while goroutines are live.
 		localFlowExec := &types.FlowExecution{Tasks: make([]*types.TaskExecution, 0)}
 
 		wg.Add(1)
@@ -218,7 +202,8 @@ func (f *FlowExecutor) executeParallel(
 	wg.Wait()
 
 	// Merge in branch-declaration order — deterministic regardless of finish
-	// order.
+	// order. Merge publishes each branch's local Scope keys under
+	// "<branch_label>.<key>" in the parent.
 	for i := range block.Branches {
 		flowExec.Tasks = append(flowExec.Tasks, branchTasks[i]...)
 		if branchCtxs[i] != nil {
@@ -230,9 +215,6 @@ func (f *FlowExecutor) executeParallel(
 }
 
 // classifyParallelErrors decides whether the parallel block as a whole failed.
-//   - cancel mode: any error fails the block.
-//   - continue mode: only fails if every branch errored (otherwise downstream
-//     tasks decide via their input requirements).
 func classifyParallelErrors(mode string, errs []error, total int) error {
 	failed := 0
 	for _, e := range errs {
@@ -260,7 +242,7 @@ func (f *FlowExecutor) resolveFlowInheritance(flow *types.Flow) (*types.Flow, er
 
 	parentFlow, ok := f.config.Flows[flow.Inherits]
 	if !ok {
-		return nil, fmt.Errorf("parent flow '%s' not found for flow '%s'", flow.Inherits, flow.Name)
+		return nil, fmt.Errorf("parent flow %q not found for flow %q", flow.Inherits, flow.Name)
 	}
 
 	resolvedParent, err := f.resolveFlowInheritance(parentFlow)

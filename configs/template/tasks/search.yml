@@ -1,23 +1,6 @@
 tasks:
   - name: query_builder
     description: "Build search query from parameters"
-    inputs:
-      - name: parsed_query
-        type: string
-        required: true
-      - name: pagination
-        type: object
-        required: false
-      - name: filters
-        type: object
-        required: false
-    outputs:
-      - name: query
-        type: object
-        required: true
-      - name: index
-        type: string
-        required: false
     logic: build_search_query
     timeout: 1000
     fallback:
@@ -26,21 +9,6 @@ tasks:
 
   - name: search_execute
     description: "Execute search query"
-    inputs:
-      - name: query
-        type: object
-        required: true
-      - name: index
-        type: string
-        required: false
-        default: "default_index"
-    outputs:
-      - name: results
-        type: array
-        required: true
-      - name: total
-        type: int
-        required: true
     provider: search_engine
     logic: execute_search
     timeout: 5000
@@ -56,29 +24,6 @@ tasks:
   - name: advanced_search
     description: "Advanced search with filters and aggregations"
     inherits: search_execute
-    inputs:
-      - name: query
-        type: object
-        required: true
-      - name: index
-        type: string
-        required: false
-      - name: aggregations
-        type: object
-        required: false
-      - name: filters
-        type: object
-        required: false
-    outputs:
-      - name: results
-        type: array
-        required: true
-      - name: total
-        type: int
-        required: true
-      - name: aggregations
-        type: object
-        required: false
     provider: search_engine
     logic: execute_advanced_search
     timeout: 10000

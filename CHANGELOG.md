@@ -4,15 +4,23 @@ All notable changes to the Jigsaw project.
 
 ## [Unreleased]
 
-### Changed
+### Changed — logic-handler refactor (BREAKING)
+- `LogicHandler` is now an interface (`Meta() LogicMeta`, `InputSchema()`, `OutputSchema()`, `ParamsSchema()`, `Execute`). The old function-typed handler is gone.
+- Registration: use `eng.Register(MyLogic{})` (reflection path) or `engine.RegisterTyped[I,O,P](eng, name, fn)` (generic closure path). `MustRegisterLogic(name, fn)` is removed.
+- Task YAML: `inputs:` and `outputs:` fields are removed. Schemas are derived from the handler's typed `Run` structs. Added `params:` for static per-task handler parameters.
+- `TaskRef.Bind` is now a nested struct with `in:` and `out:` sub-maps (was a flat map with `bind:`/`as:`).
+- Parallel branch outputs are namespaced as `<branch_label>.<key>` in the flat scope; downstream tasks read them via `bind.in`.
+- Static validation: `eng.ValidateFlows()` must be called after all handlers are registered.
+- `Fallback.TargetTask` field removed; `switch_task` strategy removed (was never implemented).
+- `types.Validator` interface now only requires `ValidateConfig`; `ValidateInputs`/`ValidateOutputs` removed.
+
+### Changed — previous entries
 - **BREAKING**: Moved `validator` package from `internal/validator` to `pkg/validator`
-  - **Reason**: The validator package needs to be accessible to external projects using Jigsaw as a library
-  - **Migration**: Update imports from `github.com/amkarkhi/jigsaw/internal/validator` to `github.com/amkarkhi/jigsaw/pkg/validator`
-  - **Impact**: External projects can now properly import and use the validator
 
 ### Added
-- `docs/EXTERNAL_USAGE.md` - Comprehensive guide for using Jigsaw as an external package
-- Examples showing how to use Jigsaw in other Go projects
+- `docs/EXTERNAL_USAGE.md` - Guide for using Jigsaw as an external package
+- `pkg/symbols` — manifest format for CLI tooling (symbols.json, schema version 2)
+- `pkg/lsp` — LSP server for editor diagnostics
 
 ## [0.1.0] - Initial Release
 
@@ -22,7 +30,7 @@ All notable changes to the Jigsaw project.
 - YAML-based configuration for tasks, flows, providers, and endpoints
 - Sub-based flow routing
 - Tag-based task overrides
-- Multiple fallback strategies (abort, continue, switch_task, switch_provider)
+- Multiple fallback strategies (abort, continue, switch_provider)
 - Task and flow inheritance
 - Provider abstraction with lazy/eager/pooled initialization
 - Hot-reload configuration support

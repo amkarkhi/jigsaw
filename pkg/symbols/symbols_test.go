@@ -55,7 +55,7 @@ func TestWriteThenReadRoundTrip(t *testing.T) {
 func TestReadRejectsUnknownSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "symbols.json")
-	if err := os.WriteFile(path, []byte(`{"version":"999","logic":[],"providers":[]}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":"999","generated_at":"2024-01-01T00:00:00Z","logic":[],"providers":[]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Read(path)

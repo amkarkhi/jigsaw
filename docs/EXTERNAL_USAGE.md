@@ -227,69 +227,62 @@ import (
     "context"
     "log"
 
-    "github.com/amkarkhi/jigsaw/pkg/config"
     "github.com/amkarkhi/jigsaw/pkg/engine"
-    "github.com/amkarkhi/jigsaw/pkg/logger"
     "github.com/amkarkhi/jigsaw/pkg/types"
     "github.com/amkarkhi/jigsaw/pkg/validator"
+    "github.com/rs/zerolog"
 )
 
+// Logic handler — struct exposes LogicMeta() + Run(...).
+type myLogic struct{}
+
+type myIn struct {
+    Input1 string `json:"input1"`
+}
+type myOut struct {
+    Output1 string `json:"output1"`
+}
+type myParams struct{}
+
+func (myLogic) LogicMeta() engine.LogicMeta {
+    return engine.LogicMeta{Name: "custom_logic", Version: "1.0.0"}
+}
+func (myLogic) Run(_ *types.ExecutionContext, in myIn, _ myParams) (myOut, error) {
+    return myOut{Output1: "processed: " + in.Input1}, nil
+}
+
 func main() {
-    logger := logger.New("info", true)
-    
-    // Create configuration programmatically
+    log := zerolog.Nop()
+
     cfg := &types.Config{
-        Tasks:     make(map[string]*types.Task),
-        Flows:     make(map[string]*types.Flow),
+        Tasks: map[string]*types.Task{
+            "my_task": {Name: "my_task", Logic: "custom_logic", Timeout: 5000},
+        },
+        Flows: map[string]*types.Flow{
+            "my_flow": {
+                Name:  "my_flow",
+                Tasks: []types.TaskRef{{Name: "my_task"}},
+            },
+        },
         Providers: make(map[string]*types.Provider),
         Endpoints: make(map[string]*types.Endpoint),
     }
-    
-    // Add a task
-    cfg.Tasks["my_task"] = &types.Task{
-        Name:        "my_task",
-        Description: "My custom task",
-        Inputs: []types.FieldDef{
-            {Name: "input1", Type: "string", Required: true},
-        },
-        Outputs: []types.FieldDef{
-            {Name: "output1", Type: "string", Required: true},
-        },
-        Logic:   "custom_logic",
-        Timeout: 5000,
-    }
-    
-    // Add a flow
-    cfg.Flows["my_flow"] = &types.Flow{
-        Name:        "my_flow",
-        Description: "My custom flow",
-        Tasks: []types.TaskRef{
-            {Name: "my_task"},
-        },
-    }
-    
-    // Validate
-    val := validator.New(logger)
+
+    val := validator.New(log)
     if err := val.ValidateConfig(cfg); err != nil {
         log.Fatal(err)
     }
-    
-    // Create engine and execute
-    eng := engine.New(cfg, val, logger)
-    
+
+    eng := engine.New(cfg, val, log)
+    engine.MustRegister(eng, myLogic{})
+
     result, err := eng.ExecuteFlow(
-        context.Background(),
-        "my_flow",
-        1,
-        map[string]any{"input1": "test"},
-        make(map[string]string),
-        nil,
+        context.Background(), "my_flow", 1,
+        map[string]any{"input1": "test"}, nil, nil,
     )
-    
     if err != nil {
         log.Fatal(err)
     }
-    
     log.Printf("Result: %+v", result)
 }
 ```
@@ -331,8 +324,6 @@ type Engine interface {
 ```go
 type Validator interface {
     ValidateConfig(config *types.Config) error
-    ValidateInputs(task *types.Task, inputs map[string]any) error
-    ValidateOutputs(task *types.Task, outputs map[string]any) error
 }
 ```
 
@@ -424,37 +415,28 @@ func processJob(job Job) error {
 
 ### Pattern 3: Parallel Branches
 ```go
-// Build a flow with two concurrent branches that each run a small task
-// sequence, then a downstream task that reads each branch's labeled output
-// via `from: <branch>.<label>`. See docs/parallel-execution.md for the full
-// design.
-cfg.Tasks["produce"] = &types.Task{
-    Name:  "produce",
-    Label: "data",                                // flow-local logical name
-    Logic: "produce",
-    Outputs: []types.FieldDef{
-        {Name: "value", Type: "string"},
-    },
-}
-cfg.Tasks["collect"] = &types.Task{
-    Name: "collect",
-    Inputs: []types.FieldDef{
-        {Name: "left_value",  From: "L.data", Field: "value", Type: "string"},
-        {Name: "right_value", From: "R.data", Field: "value", Type: "string"},
-    },
-    Logic: "collect",
-}
+// Build a flow with two concurrent branches, then a downstream task that
+// reads each branch's outputs via bind.in using "<branch_label>.<key>".
+// See docs/parallel-execution.md for the full design.
+cfg.Tasks["produce"] = &types.Task{Name: "produce", Logic: "produce"}
+cfg.Tasks["collect"] = &types.Task{Name: "collect", Logic: "collect"}
+
 cfg.Flows["fanout"] = &types.Flow{
     Name: "fanout",
     Tasks: []types.TaskRef{
         {Parallel: &types.ParallelBlock{
-            OnBranchFailure: "continue",          // "" | "continue" | "cancel"
+            OnBranchFailure: "continue", // "" | "continue" | "cancel"
             Branches: []types.Branch{
                 {Label: "L", Tasks: []types.TaskRef{{Name: "produce"}}},
                 {Label: "R", Tasks: []types.TaskRef{{Name: "produce"}}},
             },
         }},
-        {Name: "collect"},
+        {Name: "collect", Bind: &types.Bind{
+            In: map[string]string{
+                "left_value":  "L.value", // branch "L", scope key "value"
+                "right_value": "R.value", // branch "R", scope key "value"
+            },
+        }},
     },
 }
 ```

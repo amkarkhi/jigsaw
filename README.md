@@ -108,17 +108,24 @@ cd jigsaw
 package main
 
 import (
+    "context"
+    "github.com/amkarkhi/jigsaw/pkg/config"
     "github.com/amkarkhi/jigsaw/pkg/engine"
-    "github.com/amkarkhi/jigsaw/pkg/server"
+    "github.com/amkarkhi/jigsaw/pkg/validator"
+    "github.com/rs/zerolog"
 )
 
 func main() {
-    // Load configurations
-    cfg := engine.LoadConfig("./configs")
+    log := zerolog.Nop()
+    loader := config.NewLoader(log)
+    cfg, _ := loader.Load("./configs")
 
-    // Start the server
-    srv := server.New(cfg)
-    srv.Start(":8080")
+    val := validator.New(log)
+    eng := engine.New(cfg, val, log)
+    engine.MustRegister(eng, MyLogic{})  // struct with LogicMeta() + Run(...)
+
+    _, _ = eng.ExecuteFlow(context.Background(), "my_flow", 1,
+        map[string]any{"query": "test"}, nil, nil)
 }
 ```
 
@@ -157,18 +164,6 @@ jigsaw list tasks
 tasks:
   - name: cache_check
     description: Check if result exists in cache
-    inputs:
-      - name: key
-        type: string
-        required: true
-      - name: tag
-        type: string
-        required: false
-    outputs:
-      - name: value
-        type: string
-      - name: found
-        type: boolean
     provider: redis
     logic: check_key_exists
     timeout: 1000
@@ -180,6 +175,9 @@ tasks:
         found: false
 ```
 
+Task inputs and outputs are derived from the logic handler's typed structs; no
+`inputs:` / `outputs:` fields are declared in YAML.
+
 ### 2. Define a Flow
 
 **File: `configs/flows/search_flow.yml`**
@@ -189,12 +187,12 @@ flows:
   - name: search_flow
     description: Standard search workflow with caching
     tasks:
-      - parse_params
-      - cache_check
-      - query_builder
-      - search_execute
-      - cache_save
-      - response_builder
+      - name: parse_params
+      - name: cache_check
+      - name: query_builder
+      - name: search_execute
+      - name: cache_save
+      - name: response_builder
 ```
 
 ### 3. Define a Provider
@@ -223,15 +221,12 @@ providers:
 endpoints:
   - name: search
     path: /api/search
-    method: POST
+    method: GET
     flows:
-      - condition:
-          sub: 1
-        flow: basic_search_flow
-      - condition:
-          sub: 2
-          tag: advanced
-        flow: advanced_search_flow
+      - sub: 1
+        flow_name: basic_search_flow
+      - sub: 2
+        flow_name: advanced_search_flow
 ```
 
 ---
@@ -250,37 +245,25 @@ flows:
     description: Search with cache and database fallback
     tasks:
       - name: parse_input
-        logic: validate_and_parse_search_params
-
+        bind:
+          in:
+            query: query
       - name: check_cache
-        provider: cache
-        logic: get_cached_result
-        fallback:
-          strategy: continue
-
-      - name: check_if_cached
-        logic: evaluate_cache_hit
-
-      - name: build_query
-        logic: create_search_query
-        condition: cache_miss
-
+        bind:
+          in:
+            parsed_query: parsed_query
+        # task definition carries: provider: cache, logic: get_cached_result,
+        # fallback: { strategy: continue }
       - name: search_database
-        provider: search_engine
-        logic: execute_search
-        fallback:
-          strategy: switch_provider
-          providers: [search_fallback, database]
-
-      - name: save_cache
-        provider: cache
-        logic: store_result
-        condition: cache_miss
-        fallback:
-          strategy: continue
-
+        bind:
+          in:
+            parsed_query: parsed_query
+        # task definition carries: provider: search_engine, logic: execute_search,
+        # fallback: { strategy: switch_provider, providers: [search_fallback, database] }
       - name: format_response
-        logic: build_json_response
+        bind:
+          in:
+            result: search_result
 ```
 
 **Endpoint Configuration:**
@@ -291,8 +274,8 @@ endpoints:
     path: /api/search
     method: POST
     flows:
-      - condition: { sub: 1 }
-        flow: search_with_cache
+      - sub: 1
+        flow_name: search_with_cache
 ```
 
 **Request:**
@@ -323,22 +306,21 @@ curl -X POST http://localhost:8080/api/search \
 # base_validation.yml
 tasks:
   - name: base_validator
-    inputs:
-      - name: data
-        type: object
     logic: validate_schema
+    timeout: 1000
 
 # specific_validation.yml
 tasks:
   - name: search_validator
     inherits: base_validator
-    inputs:
-      - name: data
-        type: object
-      - name: query_type
-        type: string
     logic: validate_search_schema  # overrides base logic
+    params:
+      strict: true
 ```
+
+Inputs and outputs are determined by the logic handler's typed structs, not YAML
+fields. Child tasks override individual fields; unset fields fall through to the
+parent.
 
 ### Flow Inheritance
 
@@ -347,20 +329,20 @@ tasks:
 flows:
   - name: base_search
     tasks:
-      - parse_params
-      - search
-      - response
+      - name: parse_params
+      - name: search
+      - name: response
 
 # extended_flow.yml
 flows:
   - name: cached_search
     inherits: base_search
     tasks:
-      - parse_params
-      - cache_check      # added
-      - search
-      - cache_save       # added
-      - response
+      - name: parse_params
+      - name: cache_check      # added
+      - name: search
+      - name: cache_save       # added
+      - name: response
 ```
 
 ---
@@ -389,17 +371,7 @@ fallback:
     count: 0
 ```
 
-### 3. Switch Task
-
-Jump to alternative task.
-
-```yaml
-fallback:
-  strategy: switch_task
-  target_task: backup_search
-```
-
-### 4. Switch Provider
+### 3. Switch Provider
 
 Try alternate providers in order.
 
@@ -408,6 +380,8 @@ fallback:
   strategy: switch_provider
   providers: [search_engine, search_fallback, database]
 ```
+
+Valid strategies: `abort`, `continue`, `switch_provider`.
 
 ---
 
@@ -423,6 +397,9 @@ flows:
   - name: enrich_user
     tasks:
       - name: fetch_user
+        bind:
+          out:
+            user_id: user_id
 
       - parallel:
           on_branch_failure: continue   # "continue" (default) | "cancel"
@@ -430,29 +407,28 @@ flows:
             - label: profile
               tasks:
                 - name: fetch_profile
+                  bind:
+                    in:
+                      user_id: user_id
                 - name: score_profile
             - label: activity
               tasks:
                 - name: fetch_activity
+                  bind:
+                    in:
+                      user_id: user_id
                 - name: score_activity
 
-      - name: combine_scores            # reads each branch via from: <branch>.<label>
+      - name: combine_scores
+        bind:
+          in:
+            profile_score: profile.score    # branch "profile", scope key "score"
+            activity_score: activity.score  # branch "activity", scope key "score"
 ```
 
-Producer tasks expose their outputs under a flow-local `label`; downstream
-inputs reference that label (and optionally a specific output `field`) with
-`from:`:
-
-```yaml
-- name: combine_scores
-  inputs:
-    - name: profile_score
-      from: profile.profile_score   # branch "profile", label "profile_score"
-      field: score
-    - name: activity_score
-      from: activity.activity_score
-      field: score
-```
+Each branch's outputs are published into the parent scope under
+`<branch_label>.<key>`. Downstream tasks reference them via `bind.in` using the
+`<branch_label>.<key>` form.
 
 ---
 
@@ -502,30 +478,30 @@ import (
 
     "github.com/amkarkhi/jigsaw/pkg/config"
     "github.com/amkarkhi/jigsaw/pkg/engine"
-    "github.com/amkarkhi/jigsaw/pkg/router"
+    "github.com/amkarkhi/jigsaw/pkg/validator"
+    "github.com/rs/zerolog"
 )
 
 func main() {
-    // Load configuration
-    cfg, err := config.Load("./configs")
+    logger := zerolog.Nop()
+    loader := config.NewLoader(logger)
+    cfg, err := loader.Load("./configs")
     if err != nil {
         log.Fatal(err)
     }
 
-    // Create engine
-    eng := engine.New(cfg)
+    val := validator.New(logger)
+    eng := engine.New(cfg, val, logger)
 
-    // Execute a flow programmatically
+    // Register your logic handler (struct with LogicMeta() + Run(...)).
+    engine.MustRegister(eng, MySearchLogic{})
+
     ctx := context.Background()
-    result, err := eng.ExecuteFlow(ctx, "search_flow", map[string]interface{}{
-        "query": "golang",
-        "sub": 1,
-    })
-
+    result, err := eng.ExecuteFlow(ctx, "search_flow", 1,
+        map[string]any{"query": "golang"}, nil, nil)
     if err != nil {
         log.Fatal(err)
     }
-
     log.Printf("Result: %+v", result)
 }
 ```
@@ -538,19 +514,19 @@ package main
 import (
     "github.com/amkarkhi/jigsaw/pkg/config"
     "github.com/amkarkhi/jigsaw/pkg/server"
+    "github.com/rs/zerolog"
 )
 
 func main() {
-    cfg, _ := config.Load("./configs")
+    log := zerolog.Nop()
+    loader := config.NewLoader(log)
+    cfg, _ := loader.Load("./configs")
 
-    // Create Jigsaw server
-    srv := server.New(cfg, server.Options{
-        Port: 8080,
+    srv := server.New(cfg, log, server.Options{
+        Port:      8080,
         HotReload: true,
     })
-
-    // Start server
-    srv.Start()
+    srv.Start(8080, "./configs")
 }
 ```
 

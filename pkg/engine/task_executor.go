@@ -6,27 +6,29 @@ import (
 	"time"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
+	"github.com/invopop/jsonschema"
 	"github.com/rs/zerolog"
 )
 
-// TaskExecutor executes individual tasks
+// TaskExecutor executes individual tasks.
 type TaskExecutor struct {
 	config        *types.Config
 	logger        zerolog.Logger
-	logicRegistry *LogicRegistry
+	logicRegistry *logicRegistry
 }
 
-// NewTaskExecutor creates a new task executor
-func NewTaskExecutor(config *types.Config, logger zerolog.Logger, logicRegistry *LogicRegistry) *TaskExecutor {
+// NewTaskExecutor creates a new task executor.
+func NewTaskExecutor(config *types.Config, logger zerolog.Logger, reg *logicRegistry) *TaskExecutor {
 	return &TaskExecutor{
 		config:        config,
 		logger:        logger,
-		logicRegistry: logicRegistry,
+		logicRegistry: reg,
 	}
 }
 
-// Execute executes a single task
-func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task) (*types.TaskExecution, error) {
+// Execute executes a single task. The TaskRef carries bind/as rename maps that
+// tell the executor how to source inputs from and publish outputs to the scope.
+func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task, ref types.TaskRef) (*types.TaskExecution, error) {
 	taskExec := &types.TaskExecution{
 		Task:      task,
 		Status:    types.StatusRunning,
@@ -35,7 +37,6 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		Outputs:   make(map[string]any),
 	}
 
-	// Resolve task inheritance
 	resolvedTask, err := t.resolveTaskInheritance(task)
 	if err != nil {
 		taskExec.Status = types.StatusFailed
@@ -44,7 +45,6 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	}
 	taskExec.ActualTask = resolvedTask
 
-	// Capture task version
 	taskExec.TaskVersion = resolvedTask.Version
 	if taskExec.TaskVersion != "" {
 		execCtx.Versions[fmt.Sprintf("task:%s", task.Name)] = taskExec.TaskVersion
@@ -52,33 +52,27 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 
 	t.logger.Debug().Str("task", task.Name).Str("version", resolvedTask.Version).Str("provider", resolvedTask.Provider).Str("logic", resolvedTask.Logic).Msg("Executing task")
 
-	// Get scoped inputs for the task
-	scopedData := execCtx.GetScopedData(resolvedTask)
+	// Gather inputs from scope using handler's InputSchema and Bind.In rename map.
+	inputs, err := t.gatherInputs(execCtx, resolvedTask, ref.Bind)
+	if err != nil {
+		taskExec.Status = types.StatusFailed
+		taskExec.Error = err
+		return taskExec, t.handleFallback(execCtx, taskExec, ref, err)
+	}
+	taskExec.Inputs = inputs
 
-	// Validate inputs
-	for _, inputDef := range resolvedTask.Inputs {
-		val, ok := scopedData[inputDef.Name]
-		if !ok && inputDef.Required {
-			if inputDef.Default != nil {
-				val = inputDef.Default
-			} else {
-				err := fmt.Errorf("required input '%s' not found for task '%s'", inputDef.Name, task.Name)
-				taskExec.Status = types.StatusFailed
-				taskExec.Error = err
-				return taskExec, t.handleFallback(execCtx, taskExec, err)
-			}
-		}
-		taskExec.Inputs[inputDef.Name] = val
+	// Params come directly from the task definition.
+	params := resolvedTask.Params
+	if params == nil {
+		params = make(map[string]any)
 	}
 
-	// Execute task logic with provider if needed
 	var outputs map[string]any
 	var execErr error
 
 	if resolvedTask.Provider != "" {
-		outputs, execErr = t.executeWithProvider(execCtx, resolvedTask, taskExec.Inputs)
-		// Capture provider version if used
-		if execErr == nil && resolvedTask.Provider != "" {
+		outputs, execErr = t.executeWithProvider(execCtx, resolvedTask, inputs, params)
+		if execErr == nil {
 			if provider, err := execCtx.Providers.Get(resolvedTask.Provider); err == nil {
 				providerConfig := provider.GetProvider()
 				if providerConfig.Version != "" {
@@ -88,28 +82,22 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 			}
 		}
 	} else {
-		outputs, execErr = t.executeLogic(execCtx, resolvedTask, taskExec.Inputs)
+		outputs, execErr = t.executeLogic(execCtx, resolvedTask, inputs, params)
 	}
 
 	if execErr != nil {
 		taskExec.Status = types.StatusFailed
 		taskExec.Error = execErr
 
-		// Handle fallback
 		if resolvedTask.Fallback != nil {
-			return taskExec, t.handleFallback(execCtx, taskExec, execErr)
+			return taskExec, t.handleFallback(execCtx, taskExec, ref, execErr)
 		}
-
 		return taskExec, execErr
 	}
 
-	// Store outputs (qualified by branch path inside parallel scopes) and
-	// publish the task's label into the index if one is declared.
 	taskExec.Outputs = outputs
-	execCtx.SetTaskOutput(task.Name, outputs)
-	execCtx.PublishLabel(resolvedTask.Label, task.Name, outputs)
+	t.publishOutputs(execCtx, resolvedTask, outputs, ref.Bind)
 
-	// Mark as completed
 	now := time.Now()
 	taskExec.Status = types.StatusCompleted
 	taskExec.CompletedAt = &now
@@ -126,44 +114,135 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	return taskExec, nil
 }
 
-// executeWithProvider executes task logic with a provider
-func (t *TaskExecutor) executeWithProvider(execCtx *types.ExecutionContext, task *types.Task, inputs map[string]any) (map[string]any, error) {
-	// Get provider instance
-	provider, err := execCtx.Providers.Get(task.Provider)
+// gatherInputs builds the input map for a task by reading from scope.
+//
+// When the handler has an InputSchema, only properties declared in the schema
+// are gathered; bind.In controls which scope key maps to each property
+// (default: the property name itself). Required-but-missing properties are
+// errors; optional-and-missing properties are silently omitted.
+//
+// When the handler has no InputSchema (nil or no Properties), every entry in
+// bind.In is resolved from scope. This allows handlers registered without
+// typed structs to still receive data via bind.
+func (t *TaskExecutor) gatherInputs(execCtx *types.ExecutionContext, task *types.Task, bind *types.Bind) (map[string]any, error) {
+	handler, err := t.logicRegistry.get(task.Logic)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get provider '%s': %w", task.Provider, err)
+		// No handler registered — resolve bind.In keys only.
+		return t.gatherFromBind(execCtx, bind.InMap()), nil
 	}
 
-	// Ensure provider is connected
+	schema := handler.InputSchema()
+	if schema == nil || schema.Properties == nil {
+		// No schema — resolve bind.In keys only.
+		return t.gatherFromBind(execCtx, bind.InMap()), nil
+	}
+
+	inputs := make(map[string]any, schema.Properties.Len())
+	for pair := schema.Properties.Oldest(); pair != nil; pair = pair.Next() {
+		fieldName := pair.Key
+
+		// Determine the scope key via bind.In rename (default: same name).
+		scopeKey := bind.ResolveIn(fieldName)
+
+		sv, found := execCtx.ScopeGet(scopeKey)
+		if !found {
+			// Check schema default.
+			propSchema := pair.Value
+			if propSchema.Default != nil {
+				inputs[fieldName] = propSchema.Default
+				continue
+			}
+			// If the field is not required, skip it silently.
+			if !isRequired(schema, fieldName) {
+				continue
+			}
+			return nil, fmt.Errorf("task %q: required input %q not found in scope (bind.in key %q)", task.Name, fieldName, scopeKey)
+		}
+		inputs[fieldName] = sv.Value
+	}
+	return inputs, nil
+}
+
+// gatherFromBind resolves scope values for each entry in the bind map, plus
+// any scope entry whose key appears as a bind target. Used for handlers without
+// an InputSchema so they still receive explicitly wired inputs.
+func (t *TaskExecutor) gatherFromBind(execCtx *types.ExecutionContext, bind map[string]string) map[string]any {
+	if len(bind) == 0 {
+		return make(map[string]any)
+	}
+	inputs := make(map[string]any, len(bind))
+	for fieldName, scopeKey := range bind {
+		if sv, ok := execCtx.ScopeGet(scopeKey); ok {
+			inputs[fieldName] = sv.Value
+		}
+	}
+	return inputs
+}
+
+// publishOutputs writes each output to the execution scope. bind.Out controls
+// renaming (default: the property name from OutputSchema).
+func (t *TaskExecutor) publishOutputs(execCtx *types.ExecutionContext, task *types.Task, outputs map[string]any, bind *types.Bind) {
+	handler, err := t.logicRegistry.get(task.Logic)
+	if err != nil {
+		// Publish all outputs verbatim if no handler metadata.
+		for k, v := range outputs {
+			execCtx.ScopePut(bind.ResolveOut(k), types.ScopedVar{Value: v, Type: jsonTypeOfValue(v)})
+		}
+		return
+	}
+
+	schema := handler.OutputSchema()
+	if schema == nil || schema.Properties == nil {
+		for k, v := range outputs {
+			execCtx.ScopePut(bind.ResolveOut(k), types.ScopedVar{Value: v, Type: jsonTypeOfValue(v)})
+		}
+		return
+	}
+
+	for pair := schema.Properties.Oldest(); pair != nil; pair = pair.Next() {
+		fieldName := pair.Key
+		v, ok := outputs[fieldName]
+		if !ok {
+			continue
+		}
+		schemaType := schemaTypeString(pair.Value)
+		if schemaType == "" {
+			schemaType = jsonTypeOfValue(v)
+		}
+		execCtx.ScopePut(bind.ResolveOut(fieldName), types.ScopedVar{Value: v, Type: schemaType})
+	}
+}
+
+// executeWithProvider executes task logic with a provider.
+func (t *TaskExecutor) executeWithProvider(execCtx *types.ExecutionContext, task *types.Task, inputs, params map[string]any) (map[string]any, error) {
+	provider, err := execCtx.Providers.Get(task.Provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get provider %q: %w", task.Provider, err)
+	}
+
 	if !provider.IsConnected() {
 		if err := provider.Connect(execCtx.Context); err != nil {
-			return nil, fmt.Errorf("failed to connect provider '%s': %w", task.Provider, err)
+			return nil, fmt.Errorf("failed to connect provider %q: %w", task.Provider, err)
 		}
 	}
 
 	t.logger.Debug().Str("task", task.Name).Str("provider", task.Provider).Str("logic", task.Logic).Msg("Executing task with provider")
 
-	// Execute logic with provider
-	return t.executeTaskLogic(execCtx, task.Logic, inputs, provider)
+	return t.executeTaskLogic(execCtx, task.Logic, inputs, params, provider)
 }
 
-// executeLogic executes task logic without a provider
-func (t *TaskExecutor) executeLogic(execCtx *types.ExecutionContext, task *types.Task, inputs map[string]any) (map[string]any, error) {
+// executeLogic executes task logic without a provider.
+func (t *TaskExecutor) executeLogic(execCtx *types.ExecutionContext, task *types.Task, inputs, params map[string]any) (map[string]any, error) {
 	t.logger.Debug().Str("task", task.Name).Str("logic", task.Logic).Msg("Executing task logic")
-
-	// Execute logic without provider
-	return t.executeTaskLogic(execCtx, task.Logic, inputs, nil)
+	return t.executeTaskLogic(execCtx, task.Logic, inputs, params, nil)
 }
 
-// executeTaskLogic executes registered task logic
-func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic string, inputs map[string]any, provider types.ProviderInstance) (map[string]any, error) {
-	// Look up logic handler
-	handler, err := t.logicRegistry.Get(logic)
+// executeTaskLogic dispatches to the registered handler.
+func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic string, inputs, params map[string]any, provider types.ProviderInstance) (map[string]any, error) {
+	handler, err := t.logicRegistry.get(logic)
 	if err != nil {
 		t.logger.Warn().Str("logic", logic).Err(err).Msg("Logic handler not found, returning inputs as outputs")
-
-		// Return inputs as outputs if no handler registered (for testing/development)
-		outputs := make(map[string]any)
+		outputs := make(map[string]any, len(inputs))
 		for k, v := range inputs {
 			outputs[k] = v
 		}
@@ -172,13 +251,11 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 	}
 
 	t.logger.Debug().Str("logic", logic).Interface("inputs", inputs).Msg("Executing task logic")
-
-	// Execute the registered handler
-	return handler(execCtx, inputs, provider)
+	return handler.Execute(execCtx, inputs, params, provider)
 }
 
-// handleFallback handles task failure with fallback strategy
-func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, err error) error {
+// handleFallback handles task failure with fallback strategy.
+func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, ref types.TaskRef, err error) error {
 	task := taskExec.Task
 
 	if task.Fallback == nil {
@@ -191,33 +268,22 @@ func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec 
 
 	switch task.Fallback.Strategy {
 	case "abort":
-		// Stop flow execution
-		return fmt.Errorf("task '%s' failed (abort): %w", task.Name, err)
+		return fmt.Errorf("task %q failed (abort): %w", task.Name, err)
 
 	case "continue":
-		// Continue with default values
 		if task.Fallback.Defaults != nil {
 			taskExec.Outputs = task.Fallback.Defaults
-			execCtx.SetTaskOutput(task.Name, task.Fallback.Defaults)
-			execCtx.PublishLabel(task.Label, task.Name, task.Fallback.Defaults)
+			t.publishOutputs(execCtx, task, task.Fallback.Defaults, ref.Bind)
 		}
-
 		now := time.Now()
 		taskExec.Status = types.StatusCompleted
 		taskExec.CompletedAt = &now
-
 		t.logger.Info().Str("task", task.Name).Interface("defaults", task.Fallback.Defaults).Msg("Task continued with fallback defaults")
-
 		return nil
 
-	case "switch_task":
-		// This would be handled at flow level
-		return fmt.Errorf("task '%s' failed, switch_task fallback not implemented at task level", task.Name)
-
 	case "switch_provider":
-		// Try alternate providers
 		if len(task.Fallback.Providers) > 0 {
-			return t.tryAlternateProviders(execCtx, taskExec, task.Fallback.Providers)
+			return t.tryAlternateProviders(execCtx, taskExec, ref, task.Fallback.Providers)
 		}
 		return err
 
@@ -226,40 +292,37 @@ func (t *TaskExecutor) handleFallback(execCtx *types.ExecutionContext, taskExec 
 	}
 }
 
-// tryAlternateProviders attempts to execute task with alternate providers
-func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, providers []string) error {
+// tryAlternateProviders attempts to execute task with alternate providers.
+func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, taskExec *types.TaskExecution, ref types.TaskRef, providers []string) error {
 	task := taskExec.Task
 
 	for _, providerName := range providers {
 		t.logger.Info().Str("task", task.Name).Str("provider", providerName).Msg("Trying alternate provider")
 
-		// Create a temporary task with alternate provider
 		altTask := *task
 		altTask.Provider = providerName
 
-		outputs, err := t.executeWithProvider(execCtx, &altTask, taskExec.Inputs)
+		outputs, err := t.executeWithProvider(execCtx, &altTask, taskExec.Inputs, altTask.Params)
 		if err == nil {
 			taskExec.Outputs = outputs
 			taskExec.ProviderUsed = providerName
-			execCtx.SetTaskOutput(task.Name, outputs)
-			execCtx.PublishLabel(task.Label, task.Name, outputs)
+			t.publishOutputs(execCtx, task, outputs, ref.Bind)
 
 			now := time.Now()
 			taskExec.Status = types.StatusCompleted
 			taskExec.CompletedAt = &now
 
 			t.logger.Info().Str("task", task.Name).Str("provider", providerName).Msg("Task succeeded with alternate provider")
-
 			return nil
 		}
 
 		t.logger.Warn().Str("task", task.Name).Str("provider", providerName).Err(err).Msg("Alternate provider failed")
 	}
 
-	return fmt.Errorf("all provider fallbacks failed for task '%s'", task.Name)
+	return fmt.Errorf("all provider fallbacks failed for task %q", task.Name)
 }
 
-// resolveTaskInheritance resolves task inheritance
+// resolveTaskInheritance resolves task inheritance.
 func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, error) {
 	if task.Inherits == "" {
 		return task, nil
@@ -267,22 +330,18 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 
 	parentTask, ok := t.config.Tasks[task.Inherits]
 	if !ok {
-		return nil, fmt.Errorf("parent task '%s' not found for task '%s'", task.Inherits, task.Name)
+		return nil, fmt.Errorf("parent task %q not found for task %q", task.Inherits, task.Name)
 	}
 
-	// Recursively resolve parent inheritance
 	resolvedParent, err := t.resolveTaskInheritance(parentTask)
 	if err != nil {
 		return nil, err
 	}
 
-	// Merge parent and child
 	resolved := &types.Task{
 		Name:        task.Name,
 		Description: task.Description,
-		Label:       task.Label,
-		Inputs:      task.Inputs,
-		Outputs:     task.Outputs,
+		Params:      task.Params,
 		Provider:    task.Provider,
 		Fallback:    task.Fallback,
 		Logic:       task.Logic,
@@ -290,17 +349,7 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 		Retry:       task.Retry,
 		Metadata:    make(map[string]any),
 	}
-	if resolved.Label == "" {
-		resolved.Label = resolvedParent.Label
-	}
 
-	// Inherit from parent if not specified in child
-	if len(resolved.Inputs) == 0 {
-		resolved.Inputs = resolvedParent.Inputs
-	}
-	if len(resolved.Outputs) == 0 {
-		resolved.Outputs = resolvedParent.Outputs
-	}
 	if resolved.Provider == "" {
 		resolved.Provider = resolvedParent.Provider
 	}
@@ -316,12 +365,56 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 	if resolved.Retry == 0 {
 		resolved.Retry = resolvedParent.Retry
 	}
+	if resolved.Params == nil && resolvedParent.Params != nil {
+		resolved.Params = resolvedParent.Params
+	}
 
-	// Merge metadata
 	maps.Copy(resolved.Metadata, resolvedParent.Metadata)
 	maps.Copy(resolved.Metadata, task.Metadata)
 
 	t.logger.Debug().Str("task", task.Name).Str("parent", task.Inherits).Msg("Task inheritance resolved")
 
 	return resolved, nil
+}
+
+// isRequired reports whether fieldName is listed in the schema's Required slice.
+func isRequired(schema *jsonschema.Schema, fieldName string) bool {
+	for _, r := range schema.Required {
+		if r == fieldName {
+			return true
+		}
+	}
+	return false
+}
+
+// schemaTypeString extracts the type string from a property schema.
+func schemaTypeString(s *jsonschema.Schema) string {
+	if s == nil {
+		return ""
+	}
+	if s.Type != "" {
+		return s.Type
+	}
+	return ""
+}
+
+// jsonTypeOfValue returns a JSON-schema-style type string for a Go runtime value.
+func jsonTypeOfValue(v any) string {
+	if v == nil {
+		return "null"
+	}
+	switch v.(type) {
+	case bool:
+		return "boolean"
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	default:
+		return "object"
+	}
 }

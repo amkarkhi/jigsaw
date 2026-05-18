@@ -7,20 +7,14 @@ import (
 	"github.com/amkarkhi/jigsaw/pkg/types"
 )
 
-func TestSchemaCheckSurfacesMismatches(t *testing.T) {
+// TestCheckSurfacesMissingHandler verifies that Check reports a warning when a
+// task references a logic handler that is absent from the provided registry.
+func TestCheckSurfacesMissingHandler(t *testing.T) {
 	cfg := &types.Config{
 		Tasks: map[string]*types.Task{
 			"search": {
 				Name:  "search",
 				Logic: "search.byID",
-				Inputs: []types.FieldDef{
-					{Name: "id", Type: "int"},                  // type mismatch: schema says string
-					{Name: "extra", Type: "string"},            // not in schema → warning
-					// missing required "filter"
-				},
-				Outputs: []types.FieldDef{
-					{Name: "result", Type: "object"},
-				},
 			},
 		},
 		Flows: map[string]*types.Flow{
@@ -28,63 +22,48 @@ func TestSchemaCheckSurfacesMismatches(t *testing.T) {
 		},
 	}
 
+	// Registry is provided but does not contain "search.byID".
 	opts := CheckOptions{
 		RegistryProvided: true,
-		LogicRegistry: []LogicSpec{
-			{
-				Name: "search.byID",
-				InputSchema: []types.FieldDef{
-					{Name: "id", Type: "string"},
-					{Name: "filter", Type: "string", Required: true},
-				},
-				OutputSchema: []types.FieldDef{
-					{Name: "result", Type: "object"},
-				},
-			},
-		},
+		LogicRegistry:    []LogicSpec{},
 	}
 
 	diags := Check(cfg, opts)
 
-	wantSubstrings := []string{
-		`task "search" input "id" has type "int" but logic handler declares "string"`,
-		`task "search" is missing required input "filter"`,
-		`task "search" declares input "extra" which is not in the logic handler's schema`,
-	}
-	got := joinDiagMessages(diags)
-	for _, w := range wantSubstrings {
-		if !strings.Contains(got, w) {
-			t.Errorf("missing expected diagnostic: %s\nfull output:\n%s", w, got)
-		}
+	_, warns := Counts(diags)
+	if warns == 0 {
+		t.Errorf("expected at least one warning for missing handler, got none; diags: %s", joinDiagMessages(diags))
 	}
 
-	errs, warns := Counts(diags)
-	if errs == 0 {
-		t.Errorf("expected at least one error diagnostic, got %d", errs)
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "search.byID") {
+			found = true
+		}
 	}
-	if warns == 0 {
-		t.Errorf("expected at least one warning diagnostic, got %d", warns)
+	if !found {
+		t.Errorf("expected diagnostic mentioning 'search.byID', got:\n%s", joinDiagMessages(diags))
 	}
 }
 
-func TestSchemaCheckSilentWhenSchemaEmpty(t *testing.T) {
+// TestCheckSilentWhenRegistryNotProvided verifies that Check skips the handler
+// check entirely when RegistryProvided is false.
+func TestCheckSilentWhenRegistryNotProvided(t *testing.T) {
 	cfg := &types.Config{
 		Tasks: map[string]*types.Task{
-			"t": {Name: "t", Logic: "h",
-				Inputs: []types.FieldDef{{Name: "x", Type: "string"}}},
+			"t": {Name: "t", Logic: "unregistered_handler"},
 		},
 		Flows: map[string]*types.Flow{
 			"f": {Name: "f", Tasks: []types.TaskRef{{Name: "t"}}},
 		},
 	}
-	// Registry knows the handler but provides no schema → incremental adoption.
 	opts := CheckOptions{
-		RegistryProvided: true,
-		LogicRegistry:    []LogicSpec{{Name: "h"}},
+		RegistryProvided: false,
 	}
 	diags := Check(cfg, opts)
-	if errs, _ := Counts(diags); errs != 0 {
-		t.Errorf("expected no errors when handler has no schema, got %d:\n%s", errs, joinDiagMessages(diags))
+	_, warns := Counts(diags)
+	if warns != 0 {
+		t.Errorf("expected no warnings when registry not provided, got %d:\n%s", warns, joinDiagMessages(diags))
 	}
 }
 

@@ -2,6 +2,11 @@
 // YAML shapes, deliberately not onto ReactFlow's internal types — that
 // keeps the graph view and the serialization logic decoupled.
 
+export interface Bind {
+  in?: Record<string, string>;
+  out?: Record<string, string>;
+}
+
 export interface TaskRef {
   name?: string;
   // Per-placement label. The same task can appear multiple times in a flow
@@ -9,6 +14,7 @@ export interface TaskRef {
   label?: string;
   parallel?: ParallelBlock;
   overrides?: unknown[];
+  bind?: Bind;
 }
 
 export interface ParallelBlock {

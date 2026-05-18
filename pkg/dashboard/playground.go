@@ -112,7 +112,12 @@ func (d *Dashboard) handlePlaygroundRun(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		resp["error"] = err.Error()
 	} else if flowExec.Context != nil {
-		resp["result"] = flowExec.Context.LastOutput
+		// Collect all scope vars as the result.
+		snapshot := make(map[string]any, len(flowExec.Context.Scope))
+		for k, sv := range flowExec.Context.Scope {
+			snapshot[k] = sv.Value
+		}
+		resp["result"] = snapshot
 	}
 	writeJSON(w, resp)
 }
@@ -155,7 +160,7 @@ func runPlaygroundFlow(
 	execCtx = jigsawctx.WithProviders(execCtx, newStubProviderRegistry(cfg))
 	execCtx = jigsawctx.WithLogger(execCtx, logger)
 
-	exec := engine.NewFlowExecutor(cfg, logger, engine.NewLogicRegistry())
+	exec := engine.NewDryRunFlowExecutor(cfg, logger)
 	flowExec, err := exec.Execute(execCtx, flow)
 	traces := toTaskTraces(flowExec)
 	return flowExec, traces, err
@@ -196,7 +201,6 @@ func toTaskTraces(flowExec *types.FlowExecution) []taskTrace {
 			Skipped:     te.Skipped,
 		}
 		if te.ActualTask != nil {
-			t.Label = te.ActualTask.Label
 			t.Provider = te.ActualTask.Provider
 			t.Logic = te.ActualTask.Logic
 		}

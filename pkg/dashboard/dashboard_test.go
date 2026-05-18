@@ -32,8 +32,6 @@ func scratchConfig(t *testing.T) string {
   - name: hello
     description: greet
     logic: noop
-    inputs: []
-    outputs: []
 `)
 	must(filepath.Join(root, "flows", "f.yml"), `flows:
   - name: greet
