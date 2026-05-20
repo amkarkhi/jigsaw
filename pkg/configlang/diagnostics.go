@@ -36,12 +36,13 @@ func (d Diagnostic) String() string {
 
 // LogicSpec is the minimal handler description Check needs.
 type LogicSpec struct {
-	Name         string
-	Description  string
-	Version      string
-	InputSchema  *jsonschema.Schema
-	OutputSchema *jsonschema.Schema
-	ParamsSchema *jsonschema.Schema
+	Name            string
+	Description     string
+	Version         string
+	InputSchema     *jsonschema.Schema
+	OutputSchema    *jsonschema.Schema
+	ParamsSchema    *jsonschema.Schema
+	SkippableInputs []string
 }
 
 // CheckOptions controls how Check runs.

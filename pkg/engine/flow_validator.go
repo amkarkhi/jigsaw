@@ -52,8 +52,32 @@ func validateFlowTasks(
 		// Check inputs.
 		inputSchema := handler.InputSchema()
 		if inputSchema != nil && inputSchema.Properties != nil {
+			// Validate bind.skip entries: every name must exist on the input
+			// schema and must be declared `jig:"skippable"` on the logic.
+			if len(ref.Bind.SkipList()) > 0 {
+				schemaFields := make(map[string]struct{})
+				for pair := inputSchema.Properties.Oldest(); pair != nil; pair = pair.Next() {
+					schemaFields[pair.Key] = struct{}{}
+				}
+				allowedSkip := make(map[string]struct{}, len(handler.SkippableInputs()))
+				for _, name := range handler.SkippableInputs() {
+					allowedSkip[name] = struct{}{}
+				}
+				for _, fieldName := range ref.Bind.SkipList() {
+					if _, ok := schemaFields[fieldName]; !ok {
+						return fmt.Errorf("task %q: bind.skip references unknown input %q (not on logic %q)", ref.Name, fieldName, resolved.Logic)
+					}
+					if _, ok := allowedSkip[fieldName]; !ok {
+						return fmt.Errorf("task %q: input %q is not declared `jig:\"skippable\"` on logic %q and cannot be skipped", ref.Name, fieldName, resolved.Logic)
+					}
+				}
+			}
+			skipped := ref.Bind.SkipSet()
 			for pair := inputSchema.Properties.Oldest(); pair != nil; pair = pair.Next() {
 				fieldName := pair.Key
+				if _, isSkipped := skipped[fieldName]; isSkipped {
+					continue
+				}
 				scopeKey := ref.Bind.ResolveIn(fieldName)
 				if _, exists := scope[scopeKey]; !exists {
 					if isRequired(inputSchema, fieldName) {

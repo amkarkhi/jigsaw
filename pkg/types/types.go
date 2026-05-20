@@ -57,9 +57,46 @@ type TaskRef struct {
 // Bind carries the input and output scope-wiring for a TaskRef.
 // In maps handler-input-name → scope-key-to-read-from.
 // Out maps handler-output-name → scope-key-to-publish-to.
+// Skip lists handler-input-names that should be omitted from the input map
+// for this task ref (the logic sees the Go zero value). A field can only be
+// skipped if the logic's input struct marks it `jig:"skippable"`.
 type Bind struct {
-	In  map[string]string `yaml:"in,omitempty" json:"in,omitempty"`
-	Out map[string]string `yaml:"out,omitempty" json:"out,omitempty"`
+	In   map[string]string `yaml:"in,omitempty" json:"in,omitempty"`
+	Out  map[string]string `yaml:"out,omitempty" json:"out,omitempty"`
+	Skip []string          `yaml:"skip,omitempty" json:"skip,omitempty"`
+}
+
+// SkipList returns the Skip slice, or nil when b is nil.
+func (b *Bind) SkipList() []string {
+	if b == nil {
+		return nil
+	}
+	return b.Skip
+}
+
+// SkipSet returns the Skip list as a lookup set, or nil when b is nil.
+func (b *Bind) SkipSet() map[string]struct{} {
+	if b == nil || len(b.Skip) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(b.Skip))
+	for _, name := range b.Skip {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+// IsSkipped reports whether field is listed in b.Skip.
+func (b *Bind) IsSkipped(field string) bool {
+	if b == nil {
+		return false
+	}
+	for _, name := range b.Skip {
+		if name == field {
+			return true
+		}
+	}
+	return false
 }
 
 // InMap returns the In map, or nil when b is nil.

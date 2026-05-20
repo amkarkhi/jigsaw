@@ -137,9 +137,16 @@ func (t *TaskExecutor) gatherInputs(execCtx *types.ExecutionContext, task *types
 		return t.gatherFromBind(execCtx, bind.InMap()), nil
 	}
 
+	skipped := bind.SkipSet()
 	inputs := make(map[string]any, schema.Properties.Len())
 	for pair := schema.Properties.Oldest(); pair != nil; pair = pair.Next() {
 		fieldName := pair.Key
+
+		// Explicit skip: omit from the input map (logic sees Go zero value)
+		// and treat as required-satisfied for this task ref.
+		if _, isSkipped := skipped[fieldName]; isSkipped {
+			continue
+		}
 
 		// Determine the scope key via bind.In rename (default: same name).
 		scopeKey := bind.ResolveIn(fieldName)

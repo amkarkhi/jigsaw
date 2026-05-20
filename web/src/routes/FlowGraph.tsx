@@ -2045,6 +2045,7 @@ function BindEditor({
     name: string;
     input_schema: { name: string; type: string }[] | null;
     output_schema: { name: string; type: string }[] | null;
+    skippable_inputs: string[];
   } | null>(null);
   const [loading, setLoading] = useState(false);
   // Fields in "custom text input" mode (user chose the Custom… option).
@@ -2070,6 +2071,7 @@ function BindEditor({
               name: handler.name,
               input_schema: flattenSchemaProps(handler.input_schema),
               output_schema: flattenSchemaProps(handler.output_schema),
+              skippable_inputs: handler.skippable_inputs ?? [],
             });
           }
           setLoading(false);
@@ -2101,9 +2103,12 @@ function BindEditor({
     } else {
       newIn[field] = scopeKey;
     }
+    // Picking a scope binding clears any "skip" entry for the same field.
+    const curSkip = (bindings?.skip ?? []).filter((s) => s !== field);
     onChange({
       in: Object.keys(newIn).length > 0 ? newIn : undefined,
       out: bindings?.out,
+      skip: curSkip.length > 0 ? curSkip : undefined,
     });
   }
 
@@ -2117,6 +2122,23 @@ function BindEditor({
     onChange({
       in: bindings?.in,
       out: Object.keys(newOut).length > 0 ? newOut : undefined,
+      skip: bindings?.skip,
+    });
+  }
+
+  // Toggle a field's "skip" state. When turning on, also clear any bind.in
+  // entry for the same field so the two modes don't coexist.
+  function updateSkip(field: string, on: boolean) {
+    const cur = new Set(bindings?.skip ?? []);
+    if (on) cur.add(field);
+    else cur.delete(field);
+    const newSkip = Array.from(cur);
+    const newIn = { ...(bindings?.in ?? {}) };
+    if (on) delete newIn[field];
+    onChange({
+      in: Object.keys(newIn).length > 0 ? newIn : undefined,
+      out: bindings?.out,
+      skip: newSkip.length > 0 ? newSkip : undefined,
     });
   }
 
@@ -2190,11 +2212,35 @@ function BindEditor({
             // inline if that name happens to match an incompatible scope var.
             const boundVar = currentValue ? scope.find((sv) => sv.name === currentValue) : undefined;
             const typeMismatch = !!boundVar && !typesCompatible(boundVar.type, field.type);
+            const isSkippable = (logicHandler.skippable_inputs ?? []).includes(field.name);
+            const isSkipped = (bindings?.skip ?? []).includes(field.name);
             return (
               <div key={field.name} style={{ marginBottom: 8 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isSkippable ? "100px 1fr auto" : "100px 1fr",
+                    gap: 8,
+                    alignItems: "center",
+                  }}
+                >
                   <label className="meta" title={`Type: ${field.type}`}>{field.name}</label>
-                  {custom ? (
+                  {isSkipped ? (
+                    <div
+                      className="meta"
+                      style={{
+                        fontSize: 12,
+                        fontStyle: "italic",
+                        color: "var(--text-dim)",
+                        padding: "4px 8px",
+                        border: "1px dashed var(--border)",
+                        borderRadius: 4,
+                      }}
+                      title="Field omitted from the input map — logic receives the Go zero value."
+                    >
+                      skipped (logic sees zero value)
+                    </div>
+                  ) : custom ? (
                     <div style={{ display: "flex", gap: 4 }}>
                       <input
                         className="input"
@@ -2240,8 +2286,22 @@ function BindEditor({
                       <option value="__custom__">Custom…</option>
                     </select>
                   )}
+                  {isSkippable && (
+                    <label
+                      className="meta"
+                      title="Omit this input — logic receives the Go zero value. Available because the logic marked the field jig:&quot;skippable&quot;."
+                      style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, cursor: "pointer" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSkipped}
+                        onChange={(e) => updateSkip(field.name, e.target.checked)}
+                      />
+                      skip
+                    </label>
+                  )}
                 </div>
-                {typeMismatch && (
+                {!isSkipped && typeMismatch && (
                   <div style={{ color: "var(--error, #c84)", fontSize: 11, marginTop: 2, marginLeft: 108, lineHeight: 1.4 }}>
                     ⚠ "{currentValue}" in scope is type <code>{boundVar!.type}</code>, but this input expects <code>{field.type}</code>.
                     Pick a compatible variable or rename the upstream output.
@@ -2655,7 +2715,12 @@ function applyBindings(
         if (q && q.length > 0) {
           const b = q.shift();
           // Only attach bind if it has actual data
-          if (b && (Object.keys(b.in ?? {}).length > 0 || Object.keys(b.out ?? {}).length > 0)) {
+          if (
+            b &&
+            (Object.keys(b.in ?? {}).length > 0 ||
+              Object.keys(b.out ?? {}).length > 0 ||
+              (b.skip?.length ?? 0) > 0)
+          ) {
             return { ...r, bind: b };
           }
         }

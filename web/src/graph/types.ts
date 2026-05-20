@@ -5,6 +5,10 @@
 export interface Bind {
   in?: Record<string, string>;
   out?: Record<string, string>;
+  // Field names the task should explicitly omit from its input map. The
+  // logic sees the Go zero value for skipped fields. Only fields declared
+  // `jig:"skippable"` on the logic struct may appear here.
+  skip?: string[];
 }
 
 export interface TaskRef {

@@ -261,13 +261,14 @@ func (d *Dashboard) handleLogic(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(specs))
 	for _, s := range specs {
 		out = append(out, map[string]any{
-			"name":          s.Name,
-			"description":   s.Description,
-			"version":       s.Version,
-			"input_schema":  s.InputSchema,
-			"output_schema": s.OutputSchema,
-			"params_schema": s.ParamsSchema,
-			"used_by":       usage[s.Name],
+			"name":             s.Name,
+			"description":      s.Description,
+			"version":          s.Version,
+			"input_schema":     s.InputSchema,
+			"output_schema":    s.OutputSchema,
+			"params_schema":    s.ParamsSchema,
+			"skippable_inputs": s.SkippableInputs,
+			"used_by":          usage[s.Name],
 		})
 	}
 	writeJSON(w, map[string]any{
@@ -345,12 +346,13 @@ func (d *Dashboard) loadLogicSpecs() []configlang.LogicSpec {
 	specs := make([]configlang.LogicSpec, len(m.Logic))
 	for i, l := range m.Logic {
 		specs[i] = configlang.LogicSpec{
-			Name:         l.Name,
-			Description:  l.Description,
-			Version:      l.Version,
-			InputSchema:  l.InputSchema,
-			OutputSchema: l.OutputSchema,
-			ParamsSchema: l.ParamsSchema,
+			Name:            l.Name,
+			Description:     l.Description,
+			Version:         l.Version,
+			InputSchema:     l.InputSchema,
+			OutputSchema:    l.OutputSchema,
+			ParamsSchema:    l.ParamsSchema,
+			SkippableInputs: l.SkippableInputs,
 		}
 	}
 	return specs

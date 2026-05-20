@@ -103,6 +103,8 @@ function filterHandlers(handlers: LogicHandler[], q: string): LogicHandler[] {
     if (schemaMatches(h.input_schema, needle)) return true;
     if (schemaMatches(h.output_schema, needle)) return true;
     if (schemaMatches(h.params_schema, needle)) return true;
+    if (h.skippable_inputs && h.skippable_inputs.some((f) => f.toLowerCase().includes(needle))) return true;
+    if (needle === "skippable" && (h.skippable_inputs?.length ?? 0) > 0) return true;
     return false;
   });
 }
@@ -178,6 +180,19 @@ function HandlerListItem({
               used by <span style={{ color: "var(--text)" }}>{h.used_by.length}</span>
             </span>
           )}
+          {h.skippable_inputs && h.skippable_inputs.length > 0 && (
+            <span
+              title='Inputs marked `jig:"skippable"` — flows may omit them via bind.skip'
+              style={{
+                border: "1px dashed var(--border)",
+                borderRadius: 3,
+                padding: "0 5px",
+                fontSize: 10,
+              }}
+            >
+              {h.skippable_inputs.length} skippable
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -216,7 +231,13 @@ function HandlerDetail({ h, onClose }: { h: LogicHandler; onClose: () => void })
           gap: 12,
         }}
       >
-        <SchemaPanel title="Inputs" schema={h.input_schema} emptyText="No inputs declared" tone="in" />
+        <SchemaPanel
+          title="Inputs"
+          schema={h.input_schema}
+          emptyText="No inputs declared"
+          tone="in"
+          skippable={h.skippable_inputs ?? []}
+        />
         <SchemaPanel title="Outputs" schema={h.output_schema} emptyText="No outputs declared" tone="out" />
       </div>
 
@@ -245,13 +266,17 @@ function SchemaPanel({
   schema,
   emptyText,
   tone,
+  skippable,
 }: {
   title: string;
   schema: JSONSchema | null | undefined;
   emptyText?: string;
   tone: "in" | "out" | "param";
+  skippable?: string[];
 }) {
   const fields = expandTopLevelFields(schema);
+  const skipSet = new Set(skippable ?? []);
+  const skippableCount = fields.filter((f) => skipSet.has(f.name)).length;
   const accent =
     tone === "in" ? "#4a9eff" : tone === "out" ? "#7ab87a" : "var(--text-dim)";
   return (
@@ -279,13 +304,31 @@ function SchemaPanel({
         <span style={{ marginLeft: 6, color: "var(--text-dim)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
           ({fields.length})
         </span>
+        {skippableCount > 0 && (
+          <span
+            title="Inputs marked `jig:&quot;skippable&quot;` may be omitted per task ref via bind.skip"
+            style={{
+              marginLeft: 8,
+              fontWeight: 400,
+              fontSize: 10,
+              textTransform: "none",
+              letterSpacing: 0,
+              color: "var(--text-dim)",
+              border: "1px dashed var(--border)",
+              borderRadius: 3,
+              padding: "1px 6px",
+            }}
+          >
+            {skippableCount} skippable
+          </span>
+        )}
       </div>
       {fields.length === 0 ? (
         <div className="meta">{emptyText ?? "—"}</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {fields.map((f) => (
-            <FieldRowView key={f.name} field={f} />
+            <FieldRowView key={f.name} field={f} skippable={skipSet.has(f.name)} />
           ))}
         </div>
       )}
@@ -293,7 +336,7 @@ function SchemaPanel({
   );
 }
 
-function FieldRowView({ field }: { field: FieldRow }) {
+function FieldRowView({ field, skippable }: { field: FieldRow; skippable?: boolean }) {
   return (
     <div
       style={{
@@ -307,8 +350,23 @@ function FieldRowView({ field }: { field: FieldRow }) {
         {field.name}
         {field.required && <span style={{ color: "var(--danger, #c84)" }}> *</span>}
       </div>
-      <div style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+      <div style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 6 }}>
         <code>{field.type}</code>
+        {skippable && (
+          <span
+            title='Marked `jig:"skippable"` — flows may omit this field via bind.skip; logic receives the Go zero value.'
+            style={{
+              fontFamily: "var(--font-sans, inherit)",
+              fontSize: 10,
+              color: "var(--text-dim)",
+              border: "1px dashed var(--border)",
+              borderRadius: 3,
+              padding: "0 5px",
+            }}
+          >
+            skippable
+          </span>
+        )}
       </div>
       {field.description && (
         <div style={{ gridColumn: "1 / -1", color: "var(--text-dim)", fontSize: 11 }}>

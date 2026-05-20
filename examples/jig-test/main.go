@@ -12,6 +12,7 @@ import (
 	"github.com/amkarkhi/jigsaw/pkg/engine"
 	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/server"
+	"github.com/amkarkhi/jigsaw/pkg/symbols"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/amkarkhi/jigsaw/pkg/validator"
 	"github.com/rs/zerolog"
@@ -104,9 +105,12 @@ func (CheckCacheLogic) Run(
 }
 
 type buildInputs struct {
-	ParsedQuery  string `json:"parsed_query"`
-	CacheHit     bool   `json:"cache_hit"`
-	CachedResult any    `json:"cached_result"`
+	ParsedQuery string `json:"parsed_query"`
+	// Both fields are skippable: a flow that doesn't run the cache step
+	// can omit them via `bind.skip: [cache_hit, cached_result]` and the
+	// logic will see the Go zero values (false, nil).
+	CacheHit     bool `json:"cache_hit"     jig:"skippable"`
+	CachedResult any  `json:"cached_result" jig:"skippable"`
 }
 
 type buildOutputs struct {
@@ -178,6 +182,15 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info().Int("total_handlers", len(eng.ListLogicHandlers())).Msg("All logic handlers validated successfully")
+
+	// Write/refresh the symbols manifest so the dashboard (and any other
+	// tool that reads <configPath>/.jigsaw/symbols.json) picks up the
+	// current logic schemas, including each handler's skippable_inputs.
+	if err := symbols.DumpToFile(eng, cfg, "./configs", "jig-test"); err != nil {
+		log.Warn().Err(err).Msg("Failed to write symbols manifest")
+	} else {
+		log.Info().Msg("Wrote symbols manifest to ./configs/.jigsaw/symbols.json")
+	}
 
 	providerReg := createProviderRegistry(cfg, log)
 	if err := providerReg.InitAllEager(context.Background()); err != nil {

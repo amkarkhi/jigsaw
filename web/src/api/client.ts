@@ -164,6 +164,9 @@ export interface LogicHandler {
   input_schema: JSONSchema | null;
   output_schema: JSONSchema | null;
   params_schema?: JSONSchema | null;
+  // Input fields the logic author marked `jig:"skippable"` — only these
+  // can appear in a TaskRef's bind.skip list.
+  skippable_inputs?: string[];
   used_by: string[];
 }
 
