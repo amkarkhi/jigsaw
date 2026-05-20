@@ -103,15 +103,28 @@ func (b *Bind) ResolveOut(field string) string {
 }
 
 // ParallelBlock declares N branches to execute concurrently.
+//
+// MinSuccess (when > 0) is the number of branches that must succeed before
+// the block returns; remaining branches are canceled via context. 0 means
+// "wait for all branches".
+//
+// Timeout (when > 0) is a millisecond budget for the whole block; on
+// expiry every in-flight branch is canceled and the block returns whatever
+// has been collected.
 type ParallelBlock struct {
 	OnBranchFailure string   `yaml:"on_branch_failure,omitempty" json:"on_branch_failure,omitempty"`
+	MinSuccess      int      `yaml:"min_success,omitempty" json:"min_success,omitempty"`
+	Timeout         int      `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Branches        []Branch `yaml:"branches" json:"branches"`
 }
 
 // Branch is a labeled sequence of tasks executed inside a parallel block.
+// Timeout (when > 0) is a millisecond budget for this branch only; on
+// expiry the branch is canceled and reports a timeout error.
 type Branch struct {
-	Label string    `yaml:"label" json:"label"`
-	Tasks []TaskRef `yaml:"tasks" json:"tasks"`
+	Label   string    `yaml:"label" json:"label"`
+	Timeout int       `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Tasks   []TaskRef `yaml:"tasks" json:"tasks"`
 }
 
 // TaskOverride defines conditional task execution changes

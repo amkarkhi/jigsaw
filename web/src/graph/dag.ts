@@ -449,6 +449,47 @@ function makeTaskRef(node: CanvasNode): TaskRef {
   return ref;
 }
 
+// Compute the parallel-branch path for every node in the canvas by traversing
+// the same way compile() does, but recording the path-per-id instead of
+// emitting TaskRefs. Used by the editor's Refresh action so we can update
+// each existing node's `branchPath` label without recreating the graph.
+//
+// Returns `null` if the graph is not currently compilable (cycle, multi-start,
+// etc.) — the caller should leave branch paths untouched in that case.
+export function computeBranchPaths(canvas: Canvas): Map<string, string[]> | null {
+  if (canvas.nodes.length === 0) return new Map();
+  const adj = adjacency(canvas);
+  if (detectCycle(canvas, adj)) return null;
+  const source = findSource(canvas, adj);
+  if (!source) return null;
+  const topo = topoOrder(canvas, adj);
+  const out = new Map<string, string[]>();
+  function walkPaths(cur: string, stop: string | null, depth: number, path: string[]): string | null {
+    if (cur === stop) return null;
+    const node = canvas.nodes.find((n) => n.id === cur);
+    if (!node) return null;
+    out.set(cur, path.length > 0 ? [...path] : []);
+    const succ = adj.out.get(cur) ?? [];
+    if (succ.length === 0) return null;
+    if (succ.length === 1) return succ[0] === stop ? null : succ[0];
+    const join = findJoin(adj, topo, succ);
+    if (!join) return null;
+    succ.forEach((s, i) => {
+      const firstNode = canvas.nodes.find((n) => n.id === s);
+      const branchLabel = firstNode?.branchPath?.[depth] || `branch_${i + 1}`;
+      const childPath = [...path, branchLabel];
+      let cursor: string | null = s;
+      while (cursor) {
+        cursor = walkPaths(cursor, join, depth + 1, childPath);
+      }
+    });
+    return join === stop ? null : join;
+  }
+  let cur: string | null = source;
+  while (cur) cur = walkPaths(cur, null, 0, []);
+  return out;
+}
+
 // Public wrapper that converts the exception path into a CompileResult.
 export function safeCompile(canvas: Canvas): CompileResult {
   try {

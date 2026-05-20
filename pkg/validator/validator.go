@@ -139,6 +139,16 @@ func (v *Validator) validateParallel(block *types.ParallelBlock, config *types.C
 		return fmt.Errorf("parallel block must declare at least one branch")
 	}
 
+	if block.MinSuccess < 0 {
+		return fmt.Errorf("parallel block min_success must be >= 0, got %d", block.MinSuccess)
+	}
+	if block.MinSuccess > len(block.Branches) {
+		return fmt.Errorf("parallel block min_success (%d) exceeds branch count (%d)", block.MinSuccess, len(block.Branches))
+	}
+	if block.Timeout < 0 {
+		return fmt.Errorf("parallel block timeout must be >= 0, got %d", block.Timeout)
+	}
+
 	seen := make(map[string]struct{}, len(block.Branches))
 	for i, branch := range block.Branches {
 		if branch.Label == "" {
@@ -148,6 +158,9 @@ func (v *Validator) validateParallel(block *types.ParallelBlock, config *types.C
 			return fmt.Errorf("duplicate branch label %q in parallel block", branch.Label)
 		}
 		seen[branch.Label] = struct{}{}
+		if branch.Timeout < 0 {
+			return fmt.Errorf("branch %q timeout must be >= 0, got %d", branch.Label, branch.Timeout)
+		}
 		if len(branch.Tasks) == 0 {
 			return fmt.Errorf("branch %q must declare at least one task", branch.Label)
 		}

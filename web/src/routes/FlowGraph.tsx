@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useParams, Link } from "react-router-dom";
 import ReactFlow, {
   Background,
@@ -21,7 +22,7 @@ import Editor from "@monaco-editor/react";
 import { defineJigsawTheme, JIGSAW_THEME } from "../lib/monacoTheme";
 import yaml from "js-yaml";
 import { api, Diagnostic, FlowSummary, LogicHandler, TaskSummary, JSONSchema } from "../api/client";
-import { autoLayout, Canvas, CanvasEdge, CanvasNode, decompile, layoutKey, safeCompile } from "../graph/dag";
+import { autoLayout, Canvas, CanvasEdge, CanvasNode, computeBranchPaths, decompile, layoutKey, safeCompile } from "../graph/dag";
 import { Flow, FlowFile, TaskRef, Bind } from "../graph/types";
 import { validateCanvas, ValidationResult } from "../graph/validate";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
@@ -71,6 +72,9 @@ interface NodeData {
   isEnd: boolean;
   hasError?: boolean;
   hasWarning?: boolean;
+  // Validation messages attached to this node, surfaced as a hover tooltip
+  // on the error/warning chip in the node renderer.
+  issues?: { severity: "error" | "warning"; message: string }[];
 }
 
 interface CtxMenu {
@@ -123,6 +127,12 @@ function FlowGraphInner() {
   // Per-node input/output bindings, keyed by canvas node id. Compiled into the
   // emitted YAML on save.
   const [bindings, setBindings] = useState<Record<string, Bind | undefined>>({});
+
+  // Per-parallel-block configuration, keyed by the branchPath prefix that
+  // *contains* this fork. The outermost fork is keyed "", a fork nested
+  // inside branch "alpha" is keyed "alpha", and so on. Round-trip happens via
+  // collectParallelConfigs (load) and applyParallelConfigs (save / YAML mirror).
+  const [parallelConfigs, setParallelConfigs] = useState<Record<string, ParallelConfig>>({});
 
   const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -206,6 +216,7 @@ function FlowGraphInner() {
         setFlow(stripLayoutFromFlow(f)); // canonical state holds no layout; save() re-embeds it
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
+        setParallelConfigs(collectParallelConfigs(f.tasks));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setHistory([]);
@@ -277,6 +288,20 @@ function FlowGraphInner() {
     return applyBindings(flow.tasks, canvas, bindings);
   }, [flow, nodes, edges, bindings]);
 
+  // Map of node id → validation issues, used both to paint the canvas and to
+  // surface the messages in a tooltip when the user hovers the node's chip.
+  const issuesByNode = useMemo(() => {
+    const map: Record<string, { severity: "error" | "warning"; message: string }[]> = {};
+    for (const issue of validation.issues) {
+      if (!issue.nodeIds) continue;
+      for (const id of issue.nodeIds) {
+        if (!map[id]) map[id] = [];
+        map[id].push({ severity: issue.severity, message: issue.message });
+      }
+    }
+    return map;
+  }, [validation]);
+
   // Reapply visual flags to nodes/edges every render.
   const styledNodes = useMemo(
     () =>
@@ -289,9 +314,10 @@ function FlowGraphInner() {
           isEnd: startEnd.ends.has(n.id),
           hasError: validation.problemNodes.has(n.id),
           hasWarning: validation.warnNodes.has(n.id) && !validation.problemNodes.has(n.id),
+          issues: issuesByNode[n.id],
         },
       })),
-    [nodes, selectedNode, startEnd, validation],
+    [nodes, selectedNode, startEnd, validation, issuesByNode],
   );
   const styledEdges = useMemo(
     () =>
@@ -361,9 +387,10 @@ function FlowGraphInner() {
     if (!compiled.ok) return;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
     const withBindings = applyBindings(applied, canvas, bindings);
-    const merged: Flow = { ...flow, tasks: withBindings };
+    const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
+    const merged: Flow = { ...flow, tasks: withParallel };
     setYamlDraft(yaml.dump({ flows: [merged] }, { lineWidth: 100, noRefs: true }));
-  }, [nodes, edges, flow, yamlUnlocked, overrides, bindings]);
+  }, [nodes, edges, flow, yamlUnlocked, overrides, bindings, parallelConfigs]);
 
   // -------- operations -----------------------------------------------------
 
@@ -421,6 +448,32 @@ function FlowGraphInner() {
     const canvas = rfToCanvas(nodes, edges);
     autoLayout(canvas);
     commit(() => setNodes(canvasToRFNodes(canvas)));
+  }
+
+  // Update each node's branch labels/tags in place — without recreating
+  // nodes/edges or moving anything. Re-walks the current graph topology to
+  // figure out which parallel branch each node belongs to, then patches only
+  // `data.branchPath` on the existing nodes. Use when chips/tags drift after
+  // structural edits (e.g. a node added inside a branch didn't inherit its
+  // branchPath, or a rename needs to cascade).
+  function refreshGraph() {
+    const canvas = rfToCanvas(nodes, edges);
+    const paths = computeBranchPaths(canvas);
+    if (!paths) {
+      setFlash("Can't refresh tags — graph has structural errors. Fix them first.");
+      return;
+    }
+    setNodes((cur) =>
+      cur.map((n) => {
+        const path = paths.get(n.id) ?? [];
+        const next = path.length > 0 ? path : undefined;
+        const prev = (n.data as NodeData).branchPath;
+        const same = JSON.stringify(prev ?? null) === JSON.stringify(next ?? null);
+        if (same) return n;
+        return { ...n, data: { ...(n.data as NodeData), branchPath: next } };
+      }),
+    );
+    setFlash("Tags refreshed.");
   }
 
   function setNodeOverrides(nodeId: string, next: TaskRef["overrides"]) {
@@ -694,13 +747,14 @@ function FlowGraphInner() {
     if (!compiled.ok) return null;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
     const withBindings = applyBindings(applied, canvas, bindings);
+    const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
     const layout: Record<string, { x: number; y: number }> = {};
     for (const n of canvas.nodes) {
       layout[layoutKey(n)] = n.position;
     }
     const merged: Flow = {
       ...flow,
-      tasks: withBindings,
+      tasks: withParallel,
       metadata: { ...(flow.metadata ?? {}), layout },
     };
     return yaml.dump({ flows: [merged] }, { lineWidth: 100, noRefs: true });
@@ -775,6 +829,7 @@ function FlowGraphInner() {
       }
       const applied = applyOverrides(compiled.tasks, canvas, overrides);
       const withBindings = applyBindings(applied, canvas, bindings);
+      const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
       // Build the layout map once: keyed by taskName + label so a task
       // placed multiple times in the flow keeps distinct positions.
       const layout: Record<string, { x: number; y: number }> = {};
@@ -784,7 +839,7 @@ function FlowGraphInner() {
       // Layout lives in a sidecar (.jigsaw/layouts/<flow>.json), not the YAML.
       // Strip any layout that older saves embedded in metadata so the YAML
       // gets cleaned up the next time the user saves.
-      const merged: Flow = { ...stripLayoutFromFlow(flow), tasks: withBindings };
+      const merged: Flow = { ...stripLayoutFromFlow(flow), tasks: withParallel };
       // Read the original file and replace just our flow entry, preserving
       // any other flows that may live in the same file.
       const raw = await api.file(filePath);
@@ -844,6 +899,13 @@ function FlowGraphInner() {
         <span style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={() => setPaletteOpen(true)} className="btn">+ Task</button>
           <button onClick={autoArrange} className="btn" title="Re-layout the graph">Auto-arrange</button>
+          <button
+            onClick={refreshGraph}
+            className="btn"
+            title="Re-derive the graph from current state — normalizes branch labels and refreshes derived data without moving nodes"
+          >
+            Refresh
+          </button>
           <button onClick={deleteSelected} disabled={!selectedNode && !selectedEdge} className="btn">Delete</button>
           <button onClick={undo} disabled={history.length === 0} className="btn">Undo</button>
           <button onClick={redo} disabled={future.length === 0} className="btn">Redo</button>
@@ -1006,6 +1068,18 @@ function FlowGraphInner() {
                 taskInfo={selectedTask}
                 overrides={overrides[selectedNode]}
                 bindings={bindings[selectedNode]}
+                allBranchPaths={nodes.map((n) => (n.data as NodeData).branchPath).filter(Boolean) as string[][]}
+                parallelConfigs={parallelConfigs}
+                onChangeParallelConfig={(key, next) =>
+                  commit(() =>
+                    setParallelConfigs((cur) => {
+                      const out = { ...cur };
+                      if (parallelConfigIsEmpty(next)) delete out[key];
+                      else out[key] = next;
+                      return out;
+                    }),
+                  )
+                }
                 onChangeOverrides={(next) => setNodeOverrides(selectedNode, next)}
                 onChangeBindings={(next) => setNodeBindings(selectedNode, next)}
                 onChangeLabel={(label) => setNodeLabel(selectedNode, label)}
@@ -1201,6 +1275,9 @@ function Inspector({
   taskInfo,
   overrides,
   bindings,
+  allBranchPaths,
+  parallelConfigs,
+  onChangeParallelConfig,
   onChangeOverrides,
   onChangeBindings,
   onChangeLabel,
@@ -1215,6 +1292,9 @@ function Inspector({
   taskInfo: TaskSummary | undefined;
   overrides: TaskRef["overrides"];
   bindings: Bind | undefined;
+  allBranchPaths: string[][];
+  parallelConfigs: Record<string, ParallelConfig>;
+  onChangeParallelConfig: (key: string, next: ParallelConfig) => void;
   onChangeOverrides: (next: TaskRef["overrides"]) => void;
   onChangeBindings: (next: Bind | undefined) => void;
   onChangeLabel: (label: string) => void;
@@ -1238,6 +1318,14 @@ function Inspector({
         <BranchPathEditor
           path={data.branchPath}
           onRenameSegment={onRenameBranchSegment}
+        />
+      )}
+      {data.branchPath && data.branchPath.length > 0 && (
+        <ParallelBlockEditor
+          path={data.branchPath}
+          allBranchPaths={allBranchPaths}
+          parallelConfigs={parallelConfigs}
+          onChange={onChangeParallelConfig}
         />
       )}
       <LabelEditor
@@ -1494,60 +1582,63 @@ function TaskParamsEditor({ taskName }: { taskName: string }) {
   if (!task) return <div className="loading" style={{ padding: 0 }}>Loading task…</div>;
 
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-        <strong>Task parameters</strong>
+    <Section
+      title="Task parameters"
+      storageKey="task-params"
+      hint={
         <InfoHint>
           Edits write to <code>{filePath || "tasks/…"}</code>. Inputs/outputs
           are not yet editable here — use the raw editor for those.
         </InfoHint>
-        <span style={{ flex: 1 }} />
+      }
+      right={
         <button
           className="btn btn-primary"
           onClick={save}
           disabled={!dirty || busy}
+          style={{ fontSize: 11, padding: "2px 8px" }}
         >
-          {busy ? "Saving…" : "Save task"}
+          {busy ? "Saving…" : "Save"}
         </button>
-      </div>
+      }
+    >
       {flash && <div className="diag" style={{ borderLeftColor: "var(--accent)", marginBottom: 8 }}>{flash}</div>}
       {error && <div className="diag error" style={{ marginBottom: 8 }}>{error}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "8px 12px", marginBottom: 8 }}>
+      <div className="form-grid">
         <label className="meta">label</label>
-        <input className="input" value={task.label} onChange={(e) => patch("label", e.target.value)} placeholder="(optional flow-local name)" />
+        <input className="input form-input" value={task.label} onChange={(e) => patch("label", e.target.value)} placeholder="(optional flow-local name)" />
 
         <label className="meta">description</label>
-        <input className="input" value={task.description} onChange={(e) => patch("description", e.target.value)} />
+        <input className="input form-input" value={task.description} onChange={(e) => patch("description", e.target.value)} />
 
         <label className="meta">version</label>
-        <input className="input" value={task.version} onChange={(e) => patch("version", e.target.value)} placeholder="e.g. 1.0.0" />
+        <input className="input form-input" value={task.version} onChange={(e) => patch("version", e.target.value)} placeholder="e.g. 1.0.0" />
 
         <label className="meta">timeout (ms)</label>
         <input
-          className="input" type="number" min={0}
+          className="input form-input" type="number" min={0}
           value={task.timeout === "" ? "" : task.timeout}
           onChange={(e) => patch("timeout", e.target.value === "" ? "" : Number(e.target.value))}
         />
 
         <label className="meta">retry</label>
         <input
-          className="input" type="number" min={0}
+          className="input form-input" type="number" min={0}
           value={task.retry === "" ? "" : task.retry}
           onChange={(e) => patch("retry", e.target.value === "" ? "" : Number(e.target.value))}
         />
 
         <label className="meta">logic</label>
-        <input className="input" value={task.logic} onChange={(e) => patch("logic", e.target.value)} />
+        <input className="input form-input" value={task.logic} onChange={(e) => patch("logic", e.target.value)} />
 
         <label className="meta">provider</label>
-        <input className="input" value={task.provider} onChange={(e) => patch("provider", e.target.value)} placeholder="(optional)" />
+        <input className="input form-input" value={task.provider} onChange={(e) => patch("provider", e.target.value)} placeholder="(optional)" />
 
         <label className="meta">inherits</label>
-        <input className="input" value={task.inherits} onChange={(e) => patch("inherits", e.target.value)} placeholder="(optional)" />
+        <input className="input form-input" value={task.inherits} onChange={(e) => patch("inherits", e.target.value)} placeholder="(optional)" />
       </div>
-
-    </div>
+    </Section>
   );
 }
 
@@ -1570,6 +1661,176 @@ interface OverrideRow {
   condition?: Record<string, unknown>;
   action?: string;
   task?: string;
+}
+
+// ParallelBlockEditor — one Section per enclosing parallel fork. Each fork
+// shows its sibling branch labels (so the user can see which branches share
+// a join), highlights the branch this node belongs to, and lets the user
+// edit `on_branch_failure` for that fork. The state round-trips through
+// parallelConfigs keyed by the prefix path that contains the fork.
+function ParallelBlockEditor({
+  path,
+  allBranchPaths,
+  parallelConfigs,
+  onChange,
+}: {
+  path: string[];
+  allBranchPaths: string[][];
+  parallelConfigs: Record<string, ParallelConfig>;
+  onChange: (key: string, next: ParallelConfig) => void;
+}) {
+  // For each fork depth (0..path.length-1), the prefix is path.slice(0, depth);
+  // the sibling branch labels are the distinct values of branchPath[depth] for
+  // every other node whose branchPath starts with that same prefix.
+  const forks = path.map((_, depth) => {
+    const prefix = path.slice(0, depth);
+    const siblingLabels = new Set<string>();
+    for (const bp of allBranchPaths) {
+      if (bp.length <= depth) continue;
+      let matches = true;
+      for (let i = 0; i < depth; i++) {
+        if (bp[i] !== prefix[i]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) siblingLabels.add(bp[depth]);
+    }
+    return {
+      depth,
+      prefix,
+      key: parallelKey(prefix),
+      activeLabel: path[depth],
+      siblings: Array.from(siblingLabels),
+    };
+  });
+
+  return (
+    <Section
+      title={`Parallel block${forks.length > 1 ? `s (${forks.length} nested)` : ""}`}
+      storageKey="parallel"
+      defaultOpen
+    >
+      {forks.map((f) => {
+        const cfg = parallelConfigs[f.key] ?? {};
+        return (
+          <div
+            key={f.key + ":" + f.depth}
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              padding: 8,
+              marginBottom: 8,
+              background: "var(--bg)",
+            }}
+          >
+            <div className="meta" style={{ marginBottom: 6, fontSize: 11 }}>
+              <strong style={{ color: "var(--text)" }}>
+                Fork {f.depth === 0 ? "(outermost)" : `at depth ${f.depth}`}
+              </strong>
+              {f.prefix.length > 0 && (
+                <> · inside <code>{f.prefix.join("·")}</code></>
+              )}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+              {f.siblings.map((label) => (
+                <span
+                  key={label}
+                  className="badge"
+                  style={{
+                    background: label === f.activeLabel ? "var(--accent, #4a9eff)" : undefined,
+                    color: label === f.activeLabel ? "#fff" : undefined,
+                    fontFamily: "var(--font-mono)",
+                  }}
+                  title={label === f.activeLabel ? "This node lives in this branch" : "Sibling branch"}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+            <div className="form-grid">
+              <label className="meta" title="Action when any branch fails: abort the parallel block or continue running other branches.">
+                on_branch_failure
+              </label>
+              <select
+                className="input form-input"
+                value={cfg.on_branch_failure ?? ""}
+                onChange={(e) => onChange(f.key, { ...cfg, on_branch_failure: e.target.value || undefined })}
+              >
+                <option value="">— default (abort) —</option>
+                <option value="abort">abort</option>
+                <option value="continue">continue</option>
+              </select>
+
+              <label
+                className="meta"
+                title="Number of branches that must succeed before the block returns. Remaining branches are canceled. Empty / 0 = wait for all."
+              >
+                min_success
+              </label>
+              <input
+                className="input form-input"
+                type="number"
+                min={0}
+                max={f.siblings.length}
+                placeholder={`0 — all (${f.siblings.length})`}
+                value={cfg.min_success ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value, 10) || 0);
+                  onChange(f.key, { ...cfg, min_success: v });
+                }}
+              />
+
+              <label
+                className="meta"
+                title="Block-wide budget in milliseconds. When the budget elapses every in-flight branch is canceled. Empty / 0 = no timeout."
+              >
+                timeout (ms)
+              </label>
+              <input
+                className="input form-input"
+                type="number"
+                min={0}
+                placeholder="0 — no timeout"
+                value={cfg.timeout ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value, 10) || 0);
+                  onChange(f.key, { ...cfg, timeout: v });
+                }}
+              />
+
+              <label
+                className="meta"
+                title={`Per-branch budget in milliseconds for branch "${f.activeLabel}". When elapsed the branch is canceled and reports a timeout error. Empty / 0 = no timeout.`}
+              >
+                {`timeout: ${f.activeLabel} (ms)`}
+              </label>
+              <input
+                className="input form-input"
+                type="number"
+                min={0}
+                placeholder="0 — no timeout"
+                value={cfg.branch_timeouts?.[f.activeLabel] ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const next = { ...(cfg.branch_timeouts ?? {}) };
+                  if (raw === "" || parseInt(raw, 10) <= 0 || isNaN(parseInt(raw, 10))) {
+                    delete next[f.activeLabel];
+                  } else {
+                    next[f.activeLabel] = Math.max(0, parseInt(raw, 10));
+                  }
+                  onChange(f.key, {
+                    ...cfg,
+                    branch_timeouts: Object.keys(next).length > 0 ? next : undefined,
+                  });
+                }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </Section>
+  );
 }
 
 // BranchPathEditor — shows the enclosing branch chain (outer → inner) and
@@ -1692,11 +1953,12 @@ function OverridesEditor({
   }
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-        <strong style={{ flex: 1 }}>Overrides</strong>
-        <button className="btn" onClick={add}>+ Add</button>
-      </div>
+    <Section
+      title={`Overrides${overrides.length > 0 ? ` (${overrides.length})` : ""}`}
+      storageKey="overrides"
+      defaultOpen={overrides.length > 0}
+      right={<button className="btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={add}>+ Add</button>}
+    >
       {overrides.length === 0 && <div className="meta" style={{ marginBottom: 8 }}>none</div>}
       {overrides.map((ov, i) => {
         return (
@@ -1737,7 +1999,7 @@ function OverridesEditor({
           </div>
         );
       })}
-    </div>
+    </Section>
   );
 }
 
@@ -1881,19 +2143,17 @@ function BindEditor({
 
   if (loading) {
     return (
-      <div style={{ marginBottom: 12 }}>
-        <strong>Input/Output Bindings</strong>
+      <Section title="Input/Output Bindings" storageKey="bindings">
         <div className="meta">Loading...</div>
-      </div>
+      </Section>
     );
   }
 
   if (!logicHandler || (!logicHandler.input_schema && !logicHandler.output_schema)) {
     return (
-      <div style={{ marginBottom: 12 }}>
-        <strong>Input/Output Bindings</strong>
+      <Section title="Input/Output Bindings" storageKey="bindings">
         <div className="meta">No schema available for this task's logic handler.</div>
-      </div>
+      </Section>
     );
   }
 
@@ -1901,15 +2161,16 @@ function BindEditor({
   const hasOutputs = logicHandler.output_schema && logicHandler.output_schema.length > 0;
 
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-        <strong>Input/Output Bindings</strong>
+    <Section
+      title="Input/Output Bindings"
+      storageKey="bindings"
+      hint={
         <InfoHint>
           Map handler fields to scope variables. Leave blank to use the field
           name directly.
         </InfoHint>
-      </div>
-
+      }
+    >
       {scope.length === 0 && hasInputs && (
         <div className="meta" style={{ marginBottom: 8 }}>
           No upstream scope variables available at this position. Inputs will be read from request parameters by their handler-declared names.
@@ -1923,6 +2184,12 @@ function BindEditor({
             const currentValue = bindings?.in?.[field.name] ?? "";
             const custom = isCustomMode(field.name, currentValue);
             const compatibleVars = scope.filter((sv) => typesCompatible(sv.type, field.type));
+            // The dropdown shows ONLY compatible vars — picking an incompatible
+            // one would publish an unusable binding, so we don't offer it. The
+            // user can still type an arbitrary name via Custom mode; we warn
+            // inline if that name happens to match an incompatible scope var.
+            const boundVar = currentValue ? scope.find((sv) => sv.name === currentValue) : undefined;
+            const typeMismatch = !!boundVar && !typesCompatible(boundVar.type, field.type);
             return (
               <div key={field.name} style={{ marginBottom: 8 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center" }}>
@@ -1934,7 +2201,7 @@ function BindEditor({
                         placeholder={field.name}
                         value={currentValue}
                         onChange={(e) => updateIn(field.name, e.target.value)}
-                        style={{ fontSize: 12, flex: 1 }}
+                        style={{ fontSize: 12, flex: 1, borderColor: typeMismatch ? "var(--error, #c84)" : undefined }}
                       />
                       <button
                         className="btn"
@@ -1962,7 +2229,7 @@ function BindEditor({
                           updateIn(field.name, e.target.value);
                         }
                       }}
-                      style={{ fontSize: 12 }}
+                      style={{ fontSize: 12, borderColor: typeMismatch ? "var(--error, #c84)" : undefined }}
                     >
                       <option value="">— use "{field.name}" from scope —</option>
                       {compatibleVars.map((sv) => (
@@ -1970,21 +2237,16 @@ function BindEditor({
                           {sv.name} ({sv.type})
                         </option>
                       ))}
-                      {compatibleVars.length < scope.length && (
-                        <optgroup label="Other (type mismatch)">
-                          {scope
-                            .filter((sv) => !typesCompatible(sv.type, field.type))
-                            .map((sv) => (
-                              <option key={sv.name} value={sv.name}>
-                                {sv.name} ({sv.type})
-                              </option>
-                            ))}
-                        </optgroup>
-                      )}
                       <option value="__custom__">Custom…</option>
                     </select>
                   )}
                 </div>
+                {typeMismatch && (
+                  <div style={{ color: "var(--error, #c84)", fontSize: 11, marginTop: 2, marginLeft: 108, lineHeight: 1.4 }}>
+                    ⚠ "{currentValue}" in scope is type <code>{boundVar!.type}</code>, but this input expects <code>{field.type}</code>.
+                    Pick a compatible variable or rename the upstream output.
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2022,7 +2284,7 @@ function BindEditor({
           })}
         </div>
       )}
-    </div>
+    </Section>
   );
 }
 
@@ -2122,8 +2384,9 @@ function TaskNode({ data }: NodeProps<NodeData>) {
         {data.branchPath && data.branchPath.length > 0 && (
           <span className="chip branch">⌥ {data.branchPath.join("·")}</span>
         )}
-        {data.hasError && <span className="chip err">!</span>}
-        {data.hasWarning && !data.hasError && <span className="chip warn">!</span>}
+        {(data.hasError || data.hasWarning) && (
+          <IssueChip severity={data.hasError ? "error" : "warning"} issues={data.issues ?? []} />
+        )}
       </div>
       <div className="gnode-title">{data.taskName}</div>
       {data.label && (
@@ -2133,6 +2396,80 @@ function TaskNode({ data }: NodeProps<NodeData>) {
       )}
       <Handle type="source" position={Position.Bottom} className="port port-bottom" />
     </div>
+  );
+}
+
+// IssueChip — the `!` mark on a problem node. Hovering reveals the full list
+// of error/warning messages so the user doesn't have to open the issues
+// modal to find out what's wrong with this specific node.
+function IssueChip({
+  severity,
+  issues,
+}: {
+  severity: "error" | "warning";
+  issues: { severity: "error" | "warning"; message: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const cls = severity === "error" ? "chip err" : "chip warn";
+  const summary = issues.map((i) => i.message).join("\n");
+  // Portal the popup to <body> with position:fixed so it escapes ReactFlow's
+  // stacking context and never gets clipped by the canvas or node z-order.
+  function show(e: React.MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setPos({ x: r.left, y: r.bottom + 6 });
+    setOpen(true);
+  }
+  return (
+    <>
+      <span
+        className={cls}
+        title={summary || undefined}
+        onMouseEnter={show}
+        onMouseLeave={() => setOpen(false)}
+        style={{ cursor: "help" }}
+      >
+        !
+      </span>
+      {open && pos && issues.length > 0 && createPortal(
+        <div
+          className="nodrag nopan"
+          style={{
+            position: "fixed",
+            top: pos.y,
+            left: pos.x,
+            zIndex: 10000,
+            minWidth: 220,
+            maxWidth: 360,
+            padding: "8px 10px",
+            background: "var(--panel-2, #2a2f3a)",
+            border: `1px solid ${severity === "error" ? "var(--error, #c84)" : "var(--warn, #c93)"}`,
+            borderRadius: 4,
+            color: "var(--text)",
+            fontSize: 11,
+            lineHeight: 1.4,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+            pointerEvents: "none",
+          }}
+        >
+          {issues.map((it, i) => (
+            <div key={i} style={{ marginBottom: i < issues.length - 1 ? 6 : 0 }}>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color: it.severity === "error" ? "var(--error, #c84)" : "var(--warn, #c93)",
+                  marginRight: 4,
+                }}
+              >
+                {it.severity === "error" ? "ERROR" : "WARN"}
+              </span>
+              {it.message}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -2337,6 +2674,104 @@ function applyBindings(
     });
   }
   return attach(tasks);
+}
+
+// Parallel block configuration that lives outside the canvas topology. Each
+// parallel block in the flow can carry an `on_branch_failure` directive that
+// the compiler discards, so we round-trip it ourselves keyed by the branch
+// path prefix that *contains* the fork (empty string = outermost).
+interface ParallelConfig {
+  on_branch_failure?: string;
+  min_success?: number;
+  timeout?: number;
+  branch_timeouts?: Record<string, number>;
+}
+
+function parallelConfigIsEmpty(cfg: ParallelConfig | undefined): boolean {
+  if (!cfg) return true;
+  if (cfg.on_branch_failure) return false;
+  if (cfg.min_success && cfg.min_success > 0) return false;
+  if (cfg.timeout && cfg.timeout > 0) return false;
+  if (cfg.branch_timeouts && Object.keys(cfg.branch_timeouts).length > 0) return false;
+  return true;
+}
+
+function parallelKey(prefix: string[]): string {
+  return prefix.join("/");
+}
+
+// Walk a flow's task tree and pull every parallel block's config keyed by
+// the prefix of branch labels that lead to it.
+function collectParallelConfigs(tasks: TaskRef[]): Record<string, ParallelConfig> {
+  const out: Record<string, ParallelConfig> = {};
+  function walk(refs: TaskRef[], prefix: string[]) {
+    for (const r of refs) {
+      if (r.parallel) {
+        const cfg: ParallelConfig = {};
+        if (r.parallel.on_branch_failure) cfg.on_branch_failure = r.parallel.on_branch_failure;
+        if (r.parallel.min_success && r.parallel.min_success > 0) cfg.min_success = r.parallel.min_success;
+        if (r.parallel.timeout && r.parallel.timeout > 0) cfg.timeout = r.parallel.timeout;
+        const branchTimeouts: Record<string, number> = {};
+        r.parallel.branches.forEach((b, i) => {
+          const label = b.label || `branch_${i + 1}`;
+          if (b.timeout && b.timeout > 0) branchTimeouts[label] = b.timeout;
+        });
+        if (Object.keys(branchTimeouts).length > 0) cfg.branch_timeouts = branchTimeouts;
+        if (!parallelConfigIsEmpty(cfg)) out[parallelKey(prefix)] = cfg;
+        r.parallel.branches.forEach((b, i) => {
+          walk(b.tasks, [...prefix, b.label || `branch_${i + 1}`]);
+        });
+      }
+    }
+  }
+  walk(tasks, []);
+  return out;
+}
+
+// applyParallelConfigs reattaches per-parallel-block settings (on_branch_failure
+// today; room to grow) to a freshly compiled tree.
+function applyParallelConfigs(
+  tasks: TaskRef[],
+  configs: Record<string, ParallelConfig>,
+): TaskRef[] {
+  function attach(refs: TaskRef[], prefix: string[]): TaskRef[] {
+    return refs.map((r) => {
+      if (!r.parallel) return r;
+      const cfg = configs[parallelKey(prefix)];
+      const branchTimeouts = cfg?.branch_timeouts ?? {};
+      const nextParallel = {
+        ...r.parallel,
+        branches: r.parallel.branches.map((b, i) => {
+          const label = b.label || `branch_${i + 1}`;
+          const t = branchTimeouts[label];
+          const nb = { ...b, tasks: attach(b.tasks, [...prefix, label]) };
+          if (t && t > 0) {
+            nb.timeout = t;
+          } else {
+            delete (nb as { timeout?: number }).timeout;
+          }
+          return nb;
+        }),
+      };
+      if (cfg?.on_branch_failure) {
+        nextParallel.on_branch_failure = cfg.on_branch_failure;
+      } else {
+        delete (nextParallel as { on_branch_failure?: string }).on_branch_failure;
+      }
+      if (cfg?.min_success && cfg.min_success > 0) {
+        nextParallel.min_success = cfg.min_success;
+      } else {
+        delete (nextParallel as { min_success?: number }).min_success;
+      }
+      if (cfg?.timeout && cfg.timeout > 0) {
+        nextParallel.timeout = cfg.timeout;
+      } else {
+        delete (nextParallel as { timeout?: number }).timeout;
+      }
+      return { ...r, parallel: nextParallel };
+    });
+  }
+  return attach(tasks, []);
 }
 
 // ---------------------------------------------------------------------------
@@ -2814,6 +3249,71 @@ function resolveSchemaRef(node: JSONSchema, root: JSONSchema): JSONSchema {
     cur = cur[p];
   }
   return cur || node;
+}
+
+// Section — collapsible group with a clickable header. Keeps the inspector
+// scannable when many sections are open at once. Optional `right` slot for
+// trailing controls (e.g. Save button) that should stay visible in the header.
+function Section({
+  title,
+  defaultOpen = true,
+  storageKey,
+  right,
+  hint,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  storageKey?: string;
+  right?: React.ReactNode;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState<boolean>(() => {
+    if (!storageKey) return defaultOpen;
+    const v = localStorage.getItem("flowSection:" + storageKey);
+    if (v === "open") return true;
+    if (v === "closed") return false;
+    return defaultOpen;
+  });
+  useEffect(() => {
+    if (storageKey) localStorage.setItem("flowSection:" + storageKey, open ? "open" : "closed");
+  }, [open, storageKey]);
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        marginBottom: 10,
+        background: "var(--panel-2, transparent)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 8px",
+          cursor: "pointer",
+          userSelect: "none",
+        }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span style={{ width: 14, display: "inline-block", color: "var(--text-dim)", fontSize: 10 }}>
+          {open ? "▼" : "▶"}
+        </span>
+        <strong style={{ fontSize: 12 }}>{title}</strong>
+        {hint}
+        <span style={{ flex: 1 }} />
+        {right && (
+          <span onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 4 }}>
+            {right}
+          </span>
+        )}
+      </div>
+      {open && <div style={{ padding: "8px 10px 10px", borderTop: "1px solid var(--border)" }}>{children}</div>}
+    </div>
+  );
 }
 
 // InfoHint — small (i) icon that reveals a hint on hover or click. Used to

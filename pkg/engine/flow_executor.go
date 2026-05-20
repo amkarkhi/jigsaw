@@ -161,18 +161,49 @@ func (f *FlowExecutor) executeParallel(
 		mode = "continue"
 	}
 
-	f.logger.Info().Int("branches", len(block.Branches)).Str("on_branch_failure", mode).Msg("Executing parallel block")
+	total := len(block.Branches)
+	minSuccess := block.MinSuccess
+	if minSuccess < 0 {
+		minSuccess = 0
+	}
+	if minSuccess > total {
+		minSuccess = total
+	}
 
-	gctx, cancel := stdctx.WithCancel(execCtx.Context)
+	f.logger.Info().
+		Int("branches", total).
+		Str("on_branch_failure", mode).
+		Int("min_success", minSuccess).
+		Int("timeout_ms", block.Timeout).
+		Msg("Executing parallel block")
+
+	parentGoCtx := execCtx.Context
+	if block.Timeout > 0 {
+		var cancelBlock stdctx.CancelFunc
+		parentGoCtx, cancelBlock = stdctx.WithTimeout(parentGoCtx, time.Duration(block.Timeout)*time.Millisecond)
+		defer cancelBlock()
+	}
+
+	gctx, cancel := stdctx.WithCancel(parentGoCtx)
 	defer cancel()
 
-	branchCtxs := make([]*types.ExecutionContext, len(block.Branches))
-	branchTasks := make([][]*types.TaskExecution, len(block.Branches))
-	branchErrs := make([]error, len(block.Branches))
+	branchCtxs := make([]*types.ExecutionContext, total)
+	branchTasks := make([][]*types.TaskExecution, total)
+	branchErrs := make([]error, total)
 
+	done := make(chan int, total)
 	var wg sync.WaitGroup
 	for i, branch := range block.Branches {
-		childCtx := jigsawctx.Fork(execCtx, branch.Label, gctx)
+		i, branch := i, branch
+
+		branchGoCtx := gctx
+		if branch.Timeout > 0 {
+			var bcancel stdctx.CancelFunc
+			branchGoCtx, bcancel = stdctx.WithTimeout(gctx, time.Duration(branch.Timeout)*time.Millisecond)
+			defer bcancel()
+		}
+
+		childCtx := jigsawctx.Fork(execCtx, branch.Label, branchGoCtx)
 		branchCtxs[i] = childCtx
 
 		localFlowExec := &types.FlowExecution{Tasks: make([]*types.TaskExecution, 0)}
@@ -183,27 +214,41 @@ func (f *FlowExecutor) executeParallel(
 			defer func() {
 				if r := recover(); r != nil {
 					branchErrs[i] = fmt.Errorf("branch %q panicked: %v", branch.Label, r)
-					if mode == "cancel" {
-						cancel()
-					}
 				}
+				done <- i
 			}()
 
 			err := f.executeTaskList(childCtx, branch.Tasks, localFlowExec, false)
 			branchTasks[i] = localFlowExec.Tasks
 			if err != nil {
-				branchErrs[i] = fmt.Errorf("branch %q: %w", branch.Label, err)
-				if mode == "cancel" {
-					cancel()
+				if cerr := branchGoCtx.Err(); cerr != nil && errors.Is(cerr, stdctx.DeadlineExceeded) {
+					branchErrs[i] = fmt.Errorf("branch %q: timed out after %dms: %w", branch.Label, branch.Timeout, err)
+				} else {
+					branchErrs[i] = fmt.Errorf("branch %q: %w", branch.Label, err)
 				}
 			}
 		}()
 	}
+
+	successCount := 0
+	completed := 0
+	earlyExit := false
+	for completed < total {
+		i := <-done
+		completed++
+		if branchErrs[i] == nil {
+			successCount++
+			if minSuccess > 0 && successCount >= minSuccess {
+				cancel()
+				earlyExit = true
+				break
+			}
+		} else if mode == "cancel" {
+			cancel()
+		}
+	}
 	wg.Wait()
 
-	// Merge in branch-declaration order — deterministic regardless of finish
-	// order. Merge publishes each branch's local Scope keys under
-	// "<branch_label>.<key>" in the parent.
 	for i := range block.Branches {
 		flowExec.Tasks = append(flowExec.Tasks, branchTasks[i]...)
 		if branchCtxs[i] != nil {
@@ -211,21 +256,32 @@ func (f *FlowExecutor) executeParallel(
 		}
 	}
 
-	return classifyParallelErrors(mode, branchErrs, len(block.Branches))
+	if earlyExit {
+		return nil
+	}
+	return classifyParallelErrors(mode, branchErrs, total, minSuccess)
 }
 
 // classifyParallelErrors decides whether the parallel block as a whole failed.
-func classifyParallelErrors(mode string, errs []error, total int) error {
+func classifyParallelErrors(mode string, errs []error, total int, minSuccess int) error {
 	failed := 0
 	for _, e := range errs {
 		if e != nil {
 			failed++
 		}
 	}
+	succeeded := total - failed
+	joined := errors.Join(errs...)
+
+	if minSuccess > 0 {
+		if succeeded >= minSuccess {
+			return nil
+		}
+		return fmt.Errorf("only %d/%d parallel branches succeeded (min_success=%d): %w", succeeded, total, minSuccess, joined)
+	}
 	if failed == 0 {
 		return nil
 	}
-	joined := errors.Join(errs...)
 	if mode == "cancel" {
 		return joined
 	}
