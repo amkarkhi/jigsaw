@@ -19,11 +19,17 @@ export interface TaskRef {
 
 export interface ParallelBlock {
   on_branch_failure?: string;
+  // Number of branches required to succeed before the block returns. 0 / unset = wait for all.
+  min_success?: number;
+  // Block-wide budget in milliseconds. 0 / unset = no timeout.
+  timeout?: number;
   branches: Branch[];
 }
 
 export interface Branch {
   label: string;
+  // Per-branch budget in milliseconds. 0 / unset = no timeout.
+  timeout?: number;
   tasks: TaskRef[];
 }
 

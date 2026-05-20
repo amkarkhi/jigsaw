@@ -123,6 +123,30 @@ pre,
   min-height: 0;
 }
 
+/* Inspector form grid: fixed label column so labels render fully even when
+   the right panel is narrow, and a capped input column so inputs don't
+   stretch awkwardly when the panel is wide. */
+.form-grid {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.form-grid .meta {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.form-input {
+  width: 100%;
+  max-width: 260px;
+  font-size: 12px;
+  padding: 3px 6px;
+  box-sizing: border-box;
+}
+
 h1 {
   font-size: 22px;
   font-weight: 500;
