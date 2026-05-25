@@ -61,11 +61,21 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	}
 	taskExec.Inputs = inputs
 
-	// Params come directly from the task definition.
-	params := resolvedTask.Params
-	if params == nil {
-		params = make(map[string]any)
+	// Params start from the task definition; the flow's TaskRef may override
+	// individual keys (shallow merge, ref wins).
+	params := make(map[string]any, len(resolvedTask.Params)+len(ref.Params))
+	maps.Copy(params, resolvedTask.Params)
+	maps.Copy(params, ref.Params)
+
+	// Expose the task's nested ref (per-flow override winning) to the logic
+	// via ctx.Nested. Save & restore so callers above us aren't affected.
+	nested := resolvedTask.Nested
+	if ref.Nested != nil {
+		nested = ref.Nested
 	}
+	prevNested := execCtx.Nested
+	execCtx.Nested = nested
+	defer func() { execCtx.Nested = prevNested }()
 
 	var outputs map[string]any
 	var execErr error
@@ -309,7 +319,11 @@ func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, ta
 		altTask := *task
 		altTask.Provider = providerName
 
-		outputs, err := t.executeWithProvider(execCtx, &altTask, taskExec.Inputs, altTask.Params)
+		altParams := make(map[string]any, len(altTask.Params)+len(ref.Params))
+		maps.Copy(altParams, altTask.Params)
+		maps.Copy(altParams, ref.Params)
+
+		outputs, err := t.executeWithProvider(execCtx, &altTask, taskExec.Inputs, altParams)
 		if err == nil {
 			taskExec.Outputs = outputs
 			taskExec.ProviderUsed = providerName

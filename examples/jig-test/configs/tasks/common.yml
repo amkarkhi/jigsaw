@@ -28,3 +28,26 @@ tasks:
     fallback:
       strategy: abort
       message: "Failed to build response"
+
+  - name: search
+    description: "Mock search task — returns synthetic hits for a query."
+    version: "0.1.0"
+    logic: search
+    timeout: 1000
+
+  # `cache` is the generic wrapper task. It declares NO inner — flows pick the
+  # inner task via the top-level `nested:` field on their TaskRef. `keys:`
+  # defaults are also typically set per-flow (which input fields to fold into
+  # the cache key). Same wrapper works for any task whose I/O fits the bind
+  # shape used at the call site.
+  - name: cache
+    description: "Generic cache wrapper. Flow refs supply `nested: { task: ... }` and `params.keys`."
+    version: "0.1.0"
+    logic: cache_wrapper
+    provider: cache
+    params:
+      ttl: 60s
+    timeout: 1500
+    fallback:
+      strategy: abort
+      message: "cache wrapper failed"

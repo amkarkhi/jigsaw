@@ -445,6 +445,54 @@ pre.json {
   border: 1px solid rgba(160, 124, 240, 0.35);
 }
 
+.chip.wraps {
+  background: rgba(124, 199, 240, 0.14);
+  color: #8cc8f0;
+  border: 1px solid rgba(124, 199, 240, 0.35);
+}
+
+/* Wrapper tasks (params.inner names another logic) render the outer task as
+   a container around an embedded chip naming the inner logic. The thicker,
+   accent-tinted border and extra padding read as "this box wraps the box
+   inside". The inner block uses the same gnode styling at a smaller scale so
+   it looks like a real task chip, not just a label. */
+.gnode.task.wrapper {
+  border-style: dashed;
+  border-color: rgba(124, 199, 240, 0.55);
+  padding-bottom: 8px;
+  background: linear-gradient(
+    180deg,
+    var(--panel-2) 0%,
+    rgba(124, 199, 240, 0.04) 100%
+  );
+}
+
+.gnode.task.wrapper.selected {
+  border-color: var(--accent);
+}
+
+.gnode-inner {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.gnode-inner-arrow {
+  color: #8cc8f0;
+  font-weight: 600;
+}
+
+.gnode-inner-name {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
 .gnode.node-error {
   border-color: var(--error);
   box-shadow: 0 0 0 1px var(--error), 0 0 12px rgba(240, 131, 131, 0.18);

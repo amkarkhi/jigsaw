@@ -111,6 +111,21 @@ function EndpointCard({ ep, onChanged }: { ep: EndpointSummary; onChanged: () =>
         </div>
       </div>
       {ep.description && <div className="meta">{ep.description}</div>}
+      {ep.request_params && ep.request_params.length > 0 && (
+        <div className="meta" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          <span style={{ opacity: 0.7 }}>seeds:</span>
+          {ep.request_params.map((p) => (
+            <span
+              key={p}
+              className="badge mono"
+              title="Scope key seeded from the request before the flow runs"
+              style={{ background: "var(--badge-soft, rgba(120,120,120,0.15))" }}
+            >
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="meta" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {ep.flows.length === 0 && <span style={{ opacity: 0.7 }}>no flow mappings</span>}
         {ep.flows.map((m) => (

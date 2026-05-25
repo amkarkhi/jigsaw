@@ -19,6 +19,10 @@ export interface TaskRef {
   parallel?: ParallelBlock;
   overrides?: unknown[];
   bind?: Bind;
+  // Per-flow params override. Shallow-merged on top of the referenced task's
+  // params at execution time (ref keys win). Used e.g. by generic wrapper
+  // tasks like `cached_call` to pick the inner logic per flow.
+  params?: Record<string, unknown>;
 }
 
 export interface ParallelBlock {

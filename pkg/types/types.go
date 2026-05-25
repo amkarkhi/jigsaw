@@ -26,7 +26,13 @@ type Endpoint struct {
 	Method      string         `yaml:"method" json:"method"`
 	Description string         `yaml:"description" json:"description,omitempty"`
 	Flows       []FlowMapping  `yaml:"flows" json:"flows"`
-	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// RequestParams declares the scope keys that the HTTP layer will seed into
+	// the execution context before the flow runs (path / query / header / body
+	// parameters). The flow validator uses this list to pre-populate its
+	// simulated scope so first-task inputs read from these keys validate
+	// cleanly. Names should match the scope keys produced by the gateway.
+	RequestParams []string       `yaml:"request_params,omitempty" json:"request_params,omitempty"`
+	Metadata      map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // FlowMapping maps sub parameter to a specific flow
@@ -52,6 +58,28 @@ type TaskRef struct {
 	Overrides []TaskOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 	Parallel  *ParallelBlock `yaml:"parallel,omitempty" json:"parallel,omitempty"`
 	Bind      *Bind          `yaml:"bind,omitempty" json:"bind,omitempty"`
+	// Params overrides individual keys of the referenced task's Params for this
+	// flow only. Shallow merge: ref keys win, unspecified keys fall through to
+	// the task definition.
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+	// NestedTasks declares a chain of wrapper tasks that surround this ref's
+	// task. The flow ref names the real (leaf) task; wrappers stack above it,
+	// outermost first. Each wrapper's logic calls Engine.InvokeNested to
+	// advance one layer; the chain terminates by running the leaf.
+	//
+	// All layers share the leaf's I/O shape — wrappers are expected to use
+	// schemaless `map[string]any` I/O so values flow through unchanged. The
+	// ref's single Bind applies to the leaf's schema; intermediate layers
+	// don't bind to scope.
+	NestedTasks []NestedTaskRef `yaml:"nested_tasks,omitempty" json:"nested_tasks,omitempty"`
+}
+
+// NestedTaskRef is one layer in a flow ref's wrapper chain. Task names the
+// wrapper task to run; Params are shallow-merged on top of that task's params
+// for this layer.
+type NestedTaskRef struct {
+	Task   string         `yaml:"task" json:"task"`
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
 // Bind carries the input and output scope-wiring for a TaskRef.
@@ -184,6 +212,10 @@ type Task struct {
 	Timeout     int            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Retry       int            `yaml:"retry,omitempty" json:"retry,omitempty"`
 	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// Nested declares an inner task that this task's logic may dispatch via
+	// ctx.Engine.InvokeTask. Surfaced to the logic as ctx.Nested. TaskRef.Nested
+	// (per-flow) overrides this.
+	Nested *NestedTaskRef `yaml:"nested,omitempty" json:"nested,omitempty"`
 }
 
 // Fallback defines error handling strategy
@@ -238,6 +270,18 @@ type ExecutionContext struct {
 	Providers   ProviderRegistry  // Provider registry interface
 	Logger      zerolog.Logger    // Structured logger (zerolog, by value)
 	Context     context.Context   // Go context for cancellation
+
+	// Engine exposes the running engine to logic handlers so they can dispatch
+	// other registered logics by name (e.g. cache wrappers). Populated by
+	// Engine.ExecuteFlow; nil for contexts not produced by a real execution.
+	Engine LogicDispatcher
+
+	// Nested is the nested task declared on the currently executing task
+	// (TaskRef.Nested falling back to Task.Nested). The task executor sets it
+	// before invoking the logic and restores the previous value on return,
+	// giving wrapper logics access to their declared inner without reading
+	// params. nil when neither the ref nor the task declares one.
+	Nested *NestedTaskRef
 
 	// BranchPath identifies the parallel scope this context is executing inside.
 	// Empty at the top level. Populated by context.Fork.
@@ -359,6 +403,22 @@ type FlowRouter interface {
 // Validator validates configuration.
 type Validator interface {
 	ValidateConfig(config *Config) error
+}
+
+// LogicDispatcher invokes a registered logic handler or task by name from
+// inside another handler. Two flavors:
+//
+//   - Invoke: dispatches a logic by name; the caller supplies params and
+//     provider explicitly. Bind wiring does not apply.
+//   - InvokeTask: dispatches a *task* by name; the engine resolves the task
+//     (inheritance, params defaults, provider) and runs it through the same
+//     execution path a flow ref would, minus bind (caller passes/receives raw
+//     maps). paramOverrides are shallow-merged on top of the task's params.
+//
+// Implemented by *engine.Engine.
+type LogicDispatcher interface {
+	Invoke(ctx *ExecutionContext, name string, inputs map[string]any, params map[string]any, provider ProviderInstance) (map[string]any, error)
+	InvokeTask(ctx *ExecutionContext, name string, inputs map[string]any, paramOverrides map[string]any) (map[string]any, error)
 }
 
 // =====================================================================

@@ -69,6 +69,9 @@ export interface TaskSummary {
   inputs: number;
   outputs: number;
   inherits: string;
+  // Name of the inner logic this task wraps via params.inner (cache, retry,
+  // etc.). Empty / undefined for non-wrapper tasks.
+  wraps_logic?: string;
 }
 
 export interface ProviderSummary {
@@ -99,6 +102,10 @@ export interface EndpointSummary {
   method: string;
   description: string;
   flows: { sub: number; flow: string }[];
+  // Scope keys the HTTP layer seeds into ExecutionContext before the flow
+  // runs. The validator uses these to clear first-task input checks; the UI
+  // surfaces them as chips on the endpoint card.
+  request_params?: string[];
 }
 
 // FieldDef is retained for legacy UI surfaces (TaskDetail form, Tasks list)

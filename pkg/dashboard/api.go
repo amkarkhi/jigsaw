@@ -155,7 +155,7 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(cfg.Tasks))
 	for name, task := range cfg.Tasks {
 		_, implemented := known[task.Logic]
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"name":              name,
 			"description":       task.Description,
 			"logic":             task.Logic,
@@ -163,7 +163,16 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 			"provider":          task.Provider,
 			"params":            len(task.Params),
 			"inherits":          task.Inherits,
-		})
+		}
+		// Convention: a wrapper logic (cache, retry, etc.) names the inner
+		// logic to dispatch via params.inner. Surface it so the UI can
+		// render the wrapper as a container around the inner logic chip.
+		if task.Params != nil {
+			if inner, ok := task.Params["inner"].(string); ok && inner != "" {
+				entry["wraps_logic"] = inner
+			}
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, out)
 }
@@ -227,11 +236,12 @@ func (d *Dashboard) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			flows = append(flows, map[string]any{"sub": m.Sub, "flow": m.FlowName})
 		}
 		out = append(out, map[string]any{
-			"name":        name,
-			"path":        ep.Path,
-			"method":      ep.Method,
-			"description": ep.Description,
-			"flows":       flows,
+			"name":           name,
+			"path":           ep.Path,
+			"method":         ep.Method,
+			"description":    ep.Description,
+			"flows":          flows,
+			"request_params": ep.RequestParams,
 		})
 	}
 	writeJSON(w, out)
