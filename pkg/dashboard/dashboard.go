@@ -11,8 +11,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
+	"github.com/amkarkhi/jigsaw/pkg/engine"
+	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/rs/zerolog"
 )
 
@@ -58,12 +61,7 @@ func (i Identity) HasAccess(resource string) bool {
 	if i.Role == RoleAdmin {
 		return true
 	}
-	for _, a := range i.Access {
-		if a == resource {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(i.Access, resource)
 }
 
 // AuthProvider lets the consumer plug in their own auth. Returning a non-nil
@@ -112,6 +110,44 @@ type Options struct {
 	// which can be surprising in production deployments — it's off by
 	// default and must be explicitly enabled.
 	Playground bool
+
+	// Engine, when non-nil, is the host application's already-built engine
+	// (with logic handlers registered via RegisterAll or similar). When set,
+	// the playground dispatches against these real handlers instead of the
+	// dry-run echo fallback. Leave nil to keep the original sandbox
+	// behaviour where every task echoes inputs as outputs.
+	Engine *engine.Engine
+
+	// PlaygroundMode controls how the playground executes:
+	//   "real"    — use Engine (must be non-nil). Real handlers run.
+	//   "dry_run" — always use the echo-inputs executor.
+	// Defaults to "real" when Engine != nil, otherwise "dry_run".
+	PlaygroundMode string
+
+	// PlaygroundProviders, when non-nil, is the provider registry the
+	// playground hands to the executor. Defaults to a stub registry that
+	// returns no-op providers — safe for offline operation even when the
+	// host application has live providers configured. Set explicitly when
+	// the playground should hit real backends.
+	PlaygroundProviders types.ProviderRegistry
+}
+
+// PlaygroundModeReal reports whether the playground should use the host
+// engine's real handlers. Centralised so handlers and tests share the
+// resolution rule rather than duplicating the "default depends on Engine"
+// logic.
+func (o Options) PlaygroundModeReal() bool {
+	if o.Engine == nil {
+		return false
+	}
+	switch o.PlaygroundMode {
+	case "dry_run":
+		return false
+	case "real", "":
+		return true
+	default:
+		return true
+	}
 }
 
 // Dashboard wires the HTTP handler. Use New() to construct.

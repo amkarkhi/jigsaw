@@ -295,10 +295,10 @@ engine.MustRegister(eng, YourLogicStruct{})
 
 ## 🔗 Related Documentation
 
-- [Package Usage Guide](../docs/PACKAGE_USAGE.md)
-- [UI Guide](../docs/UI_GUIDE.md)
-- [Getting Started](../docs/GETTING_STARTED.md)
-- [Architecture](../docs/ARCHITECTURE.md)
+- [Package Usage Guide](../docs/guides/PACKAGE_USAGE.md)
+- [UI Guide](../docs/guides/UI_GUIDE.md)
+- [Getting Started](../docs/guides/GETTING_STARTED.md)
+- [Architecture](../docs/reference/ARCHITECTURE.md)
 
 ## ✅ Checklist
 

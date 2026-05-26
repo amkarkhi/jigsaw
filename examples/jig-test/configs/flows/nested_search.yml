@@ -1,16 +1,9 @@
 flows:
   - name: nested_search
-    description: "Generic `cache` task wrapping `search`, wired at the flow level."
+    description: "Plain `search` ref — the task's own `wrapper:` adds caching transparently."
     version: "0.1.0"
     tasks:
-      # The flow chooses what to wrap: `nested.task: search`. Same `cache`
-      # task could wrap any other task from a different flow.
-      - name: cache
-        nested:
-          task: search
-        params:
-          keys: [query]
-          ttl: 120s
+      - name: search
         bind:
           in:
             query: query

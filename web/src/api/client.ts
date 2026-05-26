@@ -69,9 +69,10 @@ export interface TaskSummary {
   inputs: number;
   outputs: number;
   inherits: string;
-  // Name of the inner logic this task wraps via params.inner (cache, retry,
-  // etc.). Empty / undefined for non-wrapper tasks.
-  wraps_logic?: string;
+  // Name of the wrapper task that intercepts this task's execution (set via
+  // YAML `wrapper: { task: <name> }`). The wrapper task receives ctx.Nested
+  // pointing back here. Undefined when no wrapper is bound.
+  wrapped_by?: string;
 }
 
 export interface ProviderSummary {
@@ -157,6 +158,10 @@ export interface FullTask {
   params?: Record<string, unknown>;
   fallback?: unknown;
   metadata?: Record<string, unknown>;
+  wrapper?: {
+    task: string;
+    params?: Record<string, unknown>;
+  };
 }
 
 export interface TaskDetail {
@@ -271,6 +276,10 @@ export const api = {
     postJSON<PlaygroundResult>("/api/playground/run", { flow, inputs, headers, sub }),
   playgroundRunYAML: (flowYAML: string, inputs: Record<string, unknown>, headers?: Record<string, string>, sub?: number) =>
     postJSON<PlaygroundResult>("/api/playground/run", { flow_yaml: flowYAML, inputs, headers, sub }),
+  playgroundTask: (task: string, inputs: Record<string, unknown>, headers?: Record<string, string>, params?: Record<string, unknown>, sub?: number) =>
+    postJSON<PlaygroundResult>("/api/playground/task", { task, inputs, headers, params, sub }),
+  playgroundLogic: (logic: string, inputs: Record<string, unknown>, headers?: Record<string, string>, params?: Record<string, unknown>, sub?: number) =>
+    postJSON<PlaygroundResult>("/api/playground/logic", { logic, inputs, headers, params, sub }),
   gitPush: (branch: string, commitMessage: string) =>
     postJSON<{ ok: boolean; branch?: string; output?: string; browse_url?: string; error?: string }>(
       "/api/git/push",

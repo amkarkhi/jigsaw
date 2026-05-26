@@ -44,6 +44,8 @@ func (d *Dashboard) routes() {
 	d.mux.HandleFunc("/api/users", d.handleUsers)
 	d.mux.HandleFunc("/api/users/", d.handleUser)
 	d.mux.HandleFunc("/api/playground/run", d.handlePlaygroundRun)
+	d.mux.HandleFunc("/api/playground/task", d.handlePlaygroundTask)
+	d.mux.HandleFunc("/api/playground/logic", d.handlePlaygroundLogic)
 
 	// Everything else falls through to the static SPA. Routing inside the SPA
 	// is handled client-side.
@@ -164,13 +166,11 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 			"params":            len(task.Params),
 			"inherits":          task.Inherits,
 		}
-		// Convention: a wrapper logic (cache, retry, etc.) names the inner
-		// logic to dispatch via params.inner. Surface it so the UI can
-		// render the wrapper as a container around the inner logic chip.
-		if task.Params != nil {
-			if inner, ok := task.Params["inner"].(string); ok && inner != "" {
-				entry["wraps_logic"] = inner
-			}
+		// Task-level wrapper: surface the wrapper task name so the UI can
+		// render this task as wrapped by another (dashed container with the
+		// wrapper's name on top, the wrapped task underneath).
+		if task.Wrapper != nil && task.Wrapper.Task != "" {
+			entry["wrapped_by"] = task.Wrapper.Task
 		}
 		out = append(out, entry)
 	}

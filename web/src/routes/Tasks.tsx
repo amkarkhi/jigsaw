@@ -124,8 +124,6 @@ export default function Tasks() {
       if (createDesc.trim()) task.description = createDesc.trim();
       if (createLogic.trim()) task.logic = createLogic.trim();
       if (createProvider.trim()) task.provider = createProvider.trim();
-      task.inputs = [];
-      task.outputs = [];
       const doc = { tasks: [task] };
       const text = yaml.dump(doc, { lineWidth: 100, noRefs: true });
       const { status, data } = await api.saveFiles({ [path]: text });

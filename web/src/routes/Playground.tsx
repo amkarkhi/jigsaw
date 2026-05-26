@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import yaml from "js-yaml";
-import { api, FlowSummary, PlaygroundResult, TaskSummary, TaskTrace } from "../api/client";
+import { api, FlowSummary, LogicHandler, PlaygroundResult, TaskSummary, TaskTrace } from "../api/client";
 import { DraftEntry, deleteDraft, listDrafts, saveDraft } from "../lib/drafts";
 import { useConfirmDialog } from "../components/useDialog";
 
@@ -20,12 +21,38 @@ import { useConfirmDialog } from "../components/useDialog";
 // engine's "echo inputs as outputs" stub. Right for shape checking;
 // not for end-to-end behaviour testing.
 
-type Mode = "saved" | "custom";
+type Mode = "saved" | "custom" | "task" | "logic";
+
+// SessionStorage key prefix for the "Test in playground" handoff used by
+// the FlowGraph editor: it stashes the current (possibly unsaved) YAML
+// under a random key and navigates with ?customKey=<key>. Survives a tab
+// reload but not a browser restart.
+const CUSTOM_HANDOFF_PREFIX = "playground:custom:";
 
 export default function Playground() {
-  const [mode, setMode] = useState<Mode>("saved");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialFlow = searchParams.get("flow") ?? "";
+  const initialTask = searchParams.get("task") ?? "";
+  const initialLogic = searchParams.get("logic") ?? "";
+  const initialCustomKey = searchParams.get("customKey") ?? "";
+  const initialCustomYAML = useMemo(() => {
+    if (!initialCustomKey) return "";
+    try {
+      return sessionStorage.getItem(CUSTOM_HANDOFF_PREFIX + initialCustomKey) ?? "";
+    } catch {
+      return "";
+    }
+  }, [initialCustomKey]);
+
+  const [mode, setMode] = useState<Mode>(() => {
+    if (initialCustomKey) return "custom";
+    if (initialTask) return "task";
+    if (initialLogic) return "logic";
+    return "saved";
+  });
   const [flows, setFlows] = useState<FlowSummary[]>([]);
   const [palette, setPalette] = useState<TaskSummary[]>([]);
+  const [logics, setLogics] = useState<LogicHandler[]>([]);
   const [enabled, setEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -34,6 +61,20 @@ export default function Playground() {
       .catch(() => setEnabled(false));
     api.flows().then(setFlows).catch(() => {});
     api.tasks().then(setPalette).catch(() => {});
+    api.logic().then((r) => setLogics(r.handlers ?? [])).catch(() => {});
+  }, []);
+
+  // Strip handoff keys from the URL once consumed so a page reload doesn't
+  // try to re-read sessionStorage (which we also clear below).
+  useEffect(() => {
+    if (initialCustomKey && initialCustomYAML) {
+      try { sessionStorage.removeItem(CUSTOM_HANDOFF_PREFIX + initialCustomKey); } catch { /* ignore */ }
+      const next = new URLSearchParams(searchParams);
+      next.delete("customKey");
+      setSearchParams(next, { replace: true });
+    }
+    // run-once on mount: dependencies intentionally omitted
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (enabled === null) return <div className="loading">Loading…</div>;
@@ -73,10 +114,24 @@ export default function Playground() {
         >
           Custom flow
         </button>
+        <button
+          className={`btn ${mode === "task" ? "btn-primary" : ""}`}
+          onClick={() => setMode("task")}
+        >
+          Single task
+        </button>
+        <button
+          className={`btn ${mode === "logic" ? "btn-primary" : ""}`}
+          onClick={() => setMode("logic")}
+        >
+          Single logic
+        </button>
       </div>
 
-      {mode === "saved" && <SavedFlowRunner flows={flows} />}
-      {mode === "custom" && <CustomFlowRunner palette={palette} />}
+      {mode === "saved" && <SavedFlowRunner flows={flows} initialFlow={initialFlow} />}
+      {mode === "custom" && <CustomFlowRunner palette={palette} initialYAML={initialCustomYAML} />}
+      {mode === "task" && <SingleTaskRunner palette={palette} initialTask={initialTask} />}
+      {mode === "logic" && <SingleLogicRunner logics={logics} initialLogic={initialLogic} />}
     </>
   );
 }
@@ -85,8 +140,8 @@ export default function Playground() {
 // Saved flow runner — picks an on-disk flow by name.
 // ---------------------------------------------------------------------------
 
-function SavedFlowRunner({ flows }: { flows: FlowSummary[] }) {
-  const [flowName, setFlowName] = useState("");
+function SavedFlowRunner({ flows, initialFlow }: { flows: FlowSummary[]; initialFlow: string }) {
+  const [flowName, setFlowName] = useState(initialFlow);
   useEffect(() => {
     if (!flowName && flows.length > 0) setFlowName(flows[0].name);
   }, [flows, flowName]);
@@ -95,7 +150,7 @@ function SavedFlowRunner({ flows }: { flows: FlowSummary[] }) {
     <RunPanel
       label="Run flow"
       canRun={!!flowName}
-      run={(inputs, sub) => api.playgroundRun(flowName, inputs, undefined, sub)}
+      run={(inputs, headers, sub) => api.playgroundRun(flowName, inputs, headers, sub)}
       left={
         <>
           <label className="meta" style={{ display: "block" }}>flow</label>
@@ -127,8 +182,14 @@ interface CustomTask {
 const TEMPLATE_SCOPE = "playground-template";
 const TEMPLATE_BUCKET = "default";
 
-function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
-  const [tasks, setTasks] = useState<CustomTask[]>([]);
+function CustomFlowRunner({ palette, initialYAML }: { palette: TaskSummary[]; initialYAML: string }) {
+  const [tasks, setTasks] = useState<CustomTask[]>(() => parseHandoffYAML(initialYAML));
+  // initialYAML may carry parallel blocks the linear-list editor can't
+  // represent. We keep the original so we send it to the backend
+  // unchanged for the first run, and let the user fall back to editing
+  // a linearised version (or open it in the flow editor) if they want.
+  const [rawYAML, setRawYAML] = useState<string>(initialYAML);
+  const [rawMode, setRawMode] = useState<boolean>(!!initialYAML && parseHandoffYAML(initialYAML).length === 0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [templates, setTemplates] = useState<DraftEntry[]>([]);
   const [saveOpen, setSaveOpen] = useState(false);
@@ -158,9 +219,14 @@ function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
     setTasks((cur) => cur.map((t, idx) => idx === i ? { ...t, label } : t));
   }
 
-  // Synthetic YAML the backend will accept.
-  const flowYAML = useMemo(() => buildCustomFlowYAML(tasks), [tasks]);
-  const ready = tasks.length > 0;
+  // Synthetic YAML the backend will accept. In rawMode we ship the user's
+  // own YAML (the "Test from flow editor" handoff sets this); otherwise we
+  // build a linear YAML from the tasks list above.
+  const flowYAML = useMemo(
+    () => (rawMode ? rawYAML : buildCustomFlowYAML(tasks)),
+    [rawMode, rawYAML, tasks],
+  );
+  const ready = rawMode ? rawYAML.trim().length > 0 : tasks.length > 0;
 
   function loadTemplate(entry: DraftEntry) {
     try {
@@ -192,12 +258,28 @@ function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
       <RunPanel
         label="Run custom flow"
         canRun={ready}
-        run={(inputs, sub) => api.playgroundRunYAML(flowYAML, inputs, undefined, sub)}
+        run={(inputs, headers, sub) => api.playgroundRunYAML(flowYAML, inputs, headers, sub)}
         left={
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <strong style={{ flex: 1 }}>Tasks</strong>
-              <button className="btn" onClick={() => setPickerOpen(true)}>+ Task</button>
+              <button
+                className={`btn ${rawMode ? "" : "btn-primary"}`}
+                onClick={() => setRawMode(false)}
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                title="Build a linear flow from the task palette"
+              >
+                List
+              </button>
+              <button
+                className={`btn ${rawMode ? "btn-primary" : ""}`}
+                onClick={() => setRawMode(true)}
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                title="Edit raw flow YAML (parallel blocks, bindings, params)"
+              >
+                YAML
+              </button>
+              {!rawMode && <button className="btn" onClick={() => setPickerOpen(true)}>+ Task</button>}
               <button
                 className="btn"
                 disabled={!ready}
@@ -207,6 +289,22 @@ function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
                 Save as template
               </button>
             </div>
+            {rawMode ? (
+              <>
+                <div className="meta">
+                  Paste a <code>{`{flows: [{tasks: [...]}]}`}</code> doc. Used as-is —
+                  supports parallel blocks, bindings, params.
+                </div>
+                <textarea
+                  className="input"
+                  value={rawYAML}
+                  onChange={(e) => setRawYAML(e.target.value)}
+                  rows={14}
+                  style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+                  placeholder={"flows:\n  - name: my-flow\n    tasks:\n      - name: my-task\n"}
+                />
+              </>
+            ) : (<>
             {tasks.length === 0 && <div className="empty" style={{ padding: 12 }}>No tasks yet. Add some.</div>}
             {tasks.map((t, i) => (
               <div key={i} style={{
@@ -262,6 +360,7 @@ function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
                 ))}
               </>
             )}
+            </>)}
           </div>
         }
       />
@@ -289,6 +388,27 @@ function CustomFlowRunner({ palette }: { palette: TaskSummary[] }) {
       {confirmUI}
     </>
   );
+}
+
+// parseHandoffYAML attempts to read a `{flows: [{tasks: [...]}]}` doc and
+// return a linear CustomTask[] when every entry is a simple task ref. If
+// the flow uses parallel blocks (or anything else this editor can't model)
+// it returns an empty array — the caller falls back to raw-YAML mode and
+// edits the doc directly.
+function parseHandoffYAML(raw: string): CustomTask[] {
+  if (!raw) return [];
+  try {
+    const parsed = yaml.load(raw) as { flows?: Array<{ tasks?: Array<{ name?: string; label?: string; parallel?: unknown }> }> };
+    const refs = parsed?.flows?.[0]?.tasks ?? [];
+    const linear: CustomTask[] = [];
+    for (const r of refs) {
+      if (typeof r.name !== "string" || r.parallel) return [];
+      linear.push({ taskName: r.name, label: r.label ?? "" });
+    }
+    return linear;
+  } catch {
+    return [];
+  }
 }
 
 function buildCustomFlowYAML(tasks: CustomTask[]): string {
@@ -419,6 +539,132 @@ function SaveTemplateModal({
 }
 
 // ---------------------------------------------------------------------------
+// SingleTaskRunner — run one task in isolation. The backend wraps it in a
+// synthetic one-task flow so the existing dry-run executor + stub providers
+// path is reused. Useful for verifying input/output shape without typing
+// out a flow YAML.
+// ---------------------------------------------------------------------------
+
+function SingleTaskRunner({ palette, initialTask }: { palette: TaskSummary[]; initialTask: string }) {
+  const [taskName, setTaskName] = useState(initialTask);
+  const [paramsText, setParamsText] = useState("{\n  \n}\n");
+  const [paramsErr, setParamsErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!taskName && palette.length > 0) setTaskName(palette[0].name);
+  }, [palette, taskName]);
+
+  function parseParams(): Record<string, unknown> | null {
+    const trimmed = paramsText.trim();
+    if (!trimmed) return {};
+    try {
+      const v = JSON.parse(trimmed);
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        setParamsErr(null);
+        return v as Record<string, unknown>;
+      }
+      setParamsErr("params must be a JSON object");
+      return null;
+    } catch (e) {
+      setParamsErr((e as Error).message);
+      return null;
+    }
+  }
+
+  return (
+    <RunPanel
+      label="Run task"
+      canRun={!!taskName}
+      run={(inputs, headers, sub) => {
+        const params = parseParams();
+        if (params === null) return Promise.reject(new Error("params: " + (paramsErr ?? "invalid JSON")));
+        return api.playgroundTask(taskName, inputs, headers, params, sub);
+      }}
+      left={
+        <>
+          <label className="meta" style={{ display: "block" }}>task</label>
+          <select className="input" value={taskName} onChange={(e) => setTaskName(e.target.value)}>
+            {palette.length === 0 && <option value="">no tasks</option>}
+            {palette.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+          </select>
+          <label className="meta" style={{ display: "block" }}>params <span style={{ opacity: 0.6 }}>(JSON, overrides task params)</span></label>
+          <textarea
+            className="input"
+            value={paramsText}
+            onChange={(e) => setParamsText(e.target.value)}
+            rows={4}
+            style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+          />
+          {paramsErr && <div className="diag error">params: {paramsErr}</div>}
+        </>
+      }
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SingleLogicRunner — run one logic handler in isolation. Mirror of
+// SingleTaskRunner but the backend synthesizes the task wrapping the logic.
+// If the dashboard binary doesn't carry the real handler (the common case)
+// the engine's echo-inputs fallback fires — still useful for shape checks.
+// ---------------------------------------------------------------------------
+
+function SingleLogicRunner({ logics, initialLogic }: { logics: LogicHandler[]; initialLogic: string }) {
+  const [logicName, setLogicName] = useState(initialLogic);
+  const [paramsText, setParamsText] = useState("{\n  \n}\n");
+  const [paramsErr, setParamsErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!logicName && logics.length > 0) setLogicName(logics[0].name);
+  }, [logics, logicName]);
+
+  function parseParams(): Record<string, unknown> | null {
+    const trimmed = paramsText.trim();
+    if (!trimmed) return {};
+    try {
+      const v = JSON.parse(trimmed);
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        setParamsErr(null);
+        return v as Record<string, unknown>;
+      }
+      setParamsErr("params must be a JSON object");
+      return null;
+    } catch (e) {
+      setParamsErr((e as Error).message);
+      return null;
+    }
+  }
+
+  return (
+    <RunPanel
+      label="Run logic"
+      canRun={!!logicName}
+      run={(inputs, headers, sub) => {
+        const params = parseParams();
+        if (params === null) return Promise.reject(new Error("params: " + (paramsErr ?? "invalid JSON")));
+        return api.playgroundLogic(logicName, inputs, headers, params, sub);
+      }}
+      left={
+        <>
+          <label className="meta" style={{ display: "block" }}>logic</label>
+          <select className="input" value={logicName} onChange={(e) => setLogicName(e.target.value)}>
+            {logics.length === 0 && <option value="">no logic handlers (manifest not loaded)</option>}
+            {logics.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
+          </select>
+          <label className="meta" style={{ display: "block" }}>params <span style={{ opacity: 0.6 }}>(JSON)</span></label>
+          <textarea
+            className="input"
+            value={paramsText}
+            onChange={(e) => setParamsText(e.target.value)}
+            rows={4}
+            style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+          />
+          {paramsErr && <div className="diag error">params: {paramsErr}</div>}
+        </>
+      }
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // RunPanel — shared shell: inputs editor on the left, trace on the right.
 // The caller plugs in its own selector (saved flow dropdown or custom
 // builder) via the `left` slot and the `run` function that produces a
@@ -433,7 +679,11 @@ function RunPanel({
 }: {
   label: string;
   canRun: boolean;
-  run: (inputs: Record<string, unknown>, sub: number) => Promise<{ status: number; data: PlaygroundResult }>;
+  run: (
+    inputs: Record<string, unknown>,
+    headers: Record<string, string>,
+    sub: number,
+  ) => Promise<{ status: number; data: PlaygroundResult }>;
   left: React.ReactNode;
 }) {
   const [sub, setSub] = useState(0);
@@ -443,6 +693,14 @@ function RunPanel({
   const [reqErr, setReqErr] = useState<string | null>(null);
   const [result, setResult] = useState<PlaygroundResult | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Headers: two-mode editor. "rows" lets the user type key/value pairs
+  // (the common case for HTTP headers), "json" lets them paste a saved
+  // headers blob. Both reduce to a flat string→string map at run time.
+  const [hdrMode, setHdrMode] = useState<"rows" | "json">("rows");
+  const [hdrRows, setHdrRows] = useState<{ key: string; value: string }[]>([]);
+  const [hdrText, setHdrText] = useState("{\n  \n}\n");
+  const [hdrErr, setHdrErr] = useState<string | null>(null);
 
   function parseInputs(): Record<string, unknown> | null {
     const trimmed = inputsText.trim();
@@ -461,15 +719,55 @@ function RunPanel({
     }
   }
 
+  function parseHeaders(): Record<string, string> | null {
+    if (hdrMode === "rows") {
+      const out: Record<string, string> = {};
+      for (const r of hdrRows) {
+        const k = r.key.trim();
+        if (!k) continue;
+        out[k] = r.value;
+      }
+      setHdrErr(null);
+      return out;
+    }
+    const trimmed = hdrText.trim();
+    if (!trimmed) {
+      setHdrErr(null);
+      return {};
+    }
+    try {
+      const v = JSON.parse(trimmed);
+      if (!v || typeof v !== "object" || Array.isArray(v)) {
+        setHdrErr("headers must be a JSON object of string→string");
+        return null;
+      }
+      const out: Record<string, string> = {};
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof val !== "string") {
+          setHdrErr(`header ${JSON.stringify(k)} must be a string`);
+          return null;
+        }
+        out[k] = val;
+      }
+      setHdrErr(null);
+      return out;
+    } catch (e) {
+      setHdrErr((e as Error).message);
+      return null;
+    }
+  }
+
   async function doRun() {
     const inputs = parseInputs();
     if (inputs === null) return;
+    const headers = parseHeaders();
+    if (headers === null) return;
     setRunning(true);
     setReqErr(null);
     setResult(null);
     setExpanded(new Set());
     try {
-      const { status, data } = await run(inputs, sub);
+      const { status, data } = await run(inputs, headers, sub);
       if (status !== 200) setReqErr(`server returned ${status}`);
       setResult(data);
     } catch (e) {
@@ -512,6 +810,81 @@ function RunPanel({
           style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
         />
         {parseErr && <div className="diag error">JSON: {parseErr}</div>}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+          <label className="meta" style={{ flex: 1 }}>
+            headers <span style={{ opacity: 0.6 }}>(forwarded as request headers)</span>
+          </label>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              className={`btn ${hdrMode === "rows" ? "btn-primary" : ""}`}
+              onClick={() => setHdrMode("rows")}
+              style={{ padding: "2px 8px", fontSize: 11 }}
+              type="button"
+            >
+              Form
+            </button>
+            <button
+              className={`btn ${hdrMode === "json" ? "btn-primary" : ""}`}
+              onClick={() => setHdrMode("json")}
+              style={{ padding: "2px 8px", fontSize: 11 }}
+              type="button"
+            >
+              JSON
+            </button>
+          </div>
+        </div>
+        {hdrMode === "rows" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {hdrRows.length === 0 && (
+              <div className="empty" style={{ padding: 8, fontSize: 11 }}>No headers. Add one below.</div>
+            )}
+            {hdrRows.map((row, i) => (
+              <div key={i} style={{ display: "flex", gap: 4 }}>
+                <input
+                  className="input"
+                  placeholder="key"
+                  value={row.key}
+                  onChange={(e) => setHdrRows((cur) => cur.map((r, idx) => idx === i ? { ...r, key: e.target.value } : r))}
+                  style={{ flex: 1, fontSize: 12, fontFamily: "var(--mono)" }}
+                />
+                <input
+                  className="input"
+                  placeholder="value"
+                  value={row.value}
+                  onChange={(e) => setHdrRows((cur) => cur.map((r, idx) => idx === i ? { ...r, value: e.target.value } : r))}
+                  style={{ flex: 2, fontSize: 12, fontFamily: "var(--mono)" }}
+                />
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => setHdrRows((cur) => cur.filter((_, idx) => idx !== i))}
+                  style={{ padding: "2px 8px", color: "var(--error)", borderColor: "var(--error)" }}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setHdrRows((cur) => [...cur, { key: "", value: "" }])}
+              style={{ alignSelf: "flex-start", padding: "2px 8px", fontSize: 11 }}
+            >
+              + Header
+            </button>
+          </div>
+        ) : (
+          <textarea
+            className="input"
+            value={hdrText}
+            onChange={(e) => setHdrText(e.target.value)}
+            rows={5}
+            style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+          />
+        )}
+        {hdrErr && <div className="diag error">headers: {hdrErr}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-primary" onClick={doRun} disabled={!canRun || running}>

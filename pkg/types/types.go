@@ -62,22 +62,14 @@ type TaskRef struct {
 	// flow only. Shallow merge: ref keys win, unspecified keys fall through to
 	// the task definition.
 	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
-	// NestedTasks declares a chain of wrapper tasks that surround this ref's
-	// task. The flow ref names the real (leaf) task; wrappers stack above it,
-	// outermost first. Each wrapper's logic calls Engine.InvokeNested to
-	// advance one layer; the chain terminates by running the leaf.
-	//
-	// All layers share the leaf's I/O shape — wrappers are expected to use
-	// schemaless `map[string]any` I/O so values flow through unchanged. The
-	// ref's single Bind applies to the leaf's schema; intermediate layers
-	// don't bind to scope.
-	NestedTasks []NestedTaskRef `yaml:"nested_tasks,omitempty" json:"nested_tasks,omitempty"`
 }
 
-// NestedTaskRef is one layer in a flow ref's wrapper chain. Task names the
-// wrapper task to run; Params are shallow-merged on top of that task's params
-// for this layer.
-type NestedTaskRef struct {
+// WrapperRef points at another task that wraps the execution of the task
+// declaring it. The wrapper's logic receives ctx.Nested (pointing to the
+// wrapped task) and is expected to dispatch the wrapped task via
+// ctx.Engine.InvokeTask. Params are shallow-merged on top of the wrapper
+// task's own params for this binding.
+type WrapperRef struct {
 	Task   string         `yaml:"task" json:"task"`
 	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 }
@@ -212,10 +204,13 @@ type Task struct {
 	Timeout     int            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Retry       int            `yaml:"retry,omitempty" json:"retry,omitempty"`
 	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
-	// Nested declares an inner task that this task's logic may dispatch via
-	// ctx.Engine.InvokeTask. Surfaced to the logic as ctx.Nested. TaskRef.Nested
-	// (per-flow) overrides this.
-	Nested *NestedTaskRef `yaml:"nested,omitempty" json:"nested,omitempty"`
+	// Wrapper declares a parent/wrapper task that wraps this task's execution.
+	// The wrapper task shares this task's I/O shape and intercepts execution
+	// (e.g., for caching, logging, metrics). The wrapper's logic receives the
+	// wrapped task name via ctx.Nested so it can invoke it via
+	// ctx.Engine.InvokeTask. Cycles between wrappers are rejected at config-
+	// validation time.
+	Wrapper *WrapperRef `yaml:"wrapper,omitempty" json:"wrapper,omitempty"`
 }
 
 // Fallback defines error handling strategy
@@ -276,12 +271,12 @@ type ExecutionContext struct {
 	// Engine.ExecuteFlow; nil for contexts not produced by a real execution.
 	Engine LogicDispatcher
 
-	// Nested is the nested task declared on the currently executing task
-	// (TaskRef.Nested falling back to Task.Nested). The task executor sets it
-	// before invoking the logic and restores the previous value on return,
-	// giving wrapper logics access to their declared inner without reading
-	// params. nil when neither the ref nor the task declares one.
-	Nested *NestedTaskRef
+	// Nested points at the task being wrapped by the currently executing
+	// wrapper logic. Set by the executor before invoking a wrapper, restored
+	// on return. Wrappers dispatch the inner via ctx.Engine.InvokeTask(
+	// ctx.Nested.Task, ...). nil when no wrapper is active. (Uses the same
+	// shape as Task.Wrapper for convenience.)
+	Nested *WrapperRef
 
 	// BranchPath identifies the parallel scope this context is executing inside.
 	// Empty at the top level. Populated by context.Fork.

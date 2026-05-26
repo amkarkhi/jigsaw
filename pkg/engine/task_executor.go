@@ -50,6 +50,12 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		execCtx.Versions[fmt.Sprintf("task:%s", task.Name)] = taskExec.TaskVersion
 	}
 
+	// Check if this task has a wrapper. If so, we execute the wrapper instead,
+	// with ctx.Nested pointing to this task so the wrapper can invoke it.
+	if resolvedTask.Wrapper != nil && resolvedTask.Wrapper.Task != "" {
+		return t.executeWithWrapper(execCtx, resolvedTask, ref, taskExec)
+	}
+
 	t.logger.Debug().Str("task", task.Name).Str("version", resolvedTask.Version).Str("provider", resolvedTask.Provider).Str("logic", resolvedTask.Logic).Msg("Executing task")
 
 	// Gather inputs from scope using handler's InputSchema and Bind.In rename map.
@@ -66,16 +72,6 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	params := make(map[string]any, len(resolvedTask.Params)+len(ref.Params))
 	maps.Copy(params, resolvedTask.Params)
 	maps.Copy(params, ref.Params)
-
-	// Expose the task's nested ref (per-flow override winning) to the logic
-	// via ctx.Nested. Save & restore so callers above us aren't affected.
-	nested := resolvedTask.Nested
-	if ref.Nested != nil {
-		nested = ref.Nested
-	}
-	prevNested := execCtx.Nested
-	execCtx.Nested = nested
-	defer func() { execCtx.Nested = prevNested }()
 
 	var outputs map[string]any
 	var execErr error
@@ -343,6 +339,119 @@ func (t *TaskExecutor) tryAlternateProviders(execCtx *types.ExecutionContext, ta
 	return fmt.Errorf("all provider fallbacks failed for task %q", task.Name)
 }
 
+// executeWithWrapper executes a task through its wrapper. The wrapper task
+// receives ctx.Nested pointing to the original task, allowing it to invoke
+// the original task via ctx.Engine.InvokeTask. The wrapper inherits the
+// original task's I/O bindings so data flows through transparently.
+func (t *TaskExecutor) executeWithWrapper(
+	execCtx *types.ExecutionContext,
+	originalTask *types.Task,
+	ref types.TaskRef,
+	taskExec *types.TaskExecution,
+) (*types.TaskExecution, error) {
+	wrapper := originalTask.Wrapper
+	if wrapper == nil || wrapper.Task == "" {
+		return nil, fmt.Errorf("executeWithWrapper called but wrapper is nil or empty")
+	}
+
+	// Resolve the wrapper task
+	wrapperTask, ok := t.config.Tasks[wrapper.Task]
+	if !ok {
+		taskExec.Status = types.StatusFailed
+		err := fmt.Errorf("wrapper task %q not found for task %q", wrapper.Task, originalTask.Name)
+		taskExec.Error = err
+		return taskExec, err
+	}
+
+	resolvedWrapper, err := t.resolveTaskInheritance(wrapperTask)
+	if err != nil {
+		taskExec.Status = types.StatusFailed
+		taskExec.Error = err
+		return taskExec, err
+	}
+
+	t.logger.Debug().
+		Str("task", originalTask.Name).
+		Str("wrapper", wrapper.Task).
+		Str("wrapper_logic", resolvedWrapper.Logic).
+		Msg("Executing task with wrapper")
+
+	// Gather inputs using the ORIGINAL task's I/O schema and bindings.
+	// The wrapper is transparent to the flow's I/O.
+	inputs, err := t.gatherInputs(execCtx, originalTask, ref.Bind)
+	if err != nil {
+		taskExec.Status = types.StatusFailed
+		taskExec.Error = err
+		return taskExec, t.handleFallback(execCtx, taskExec, ref, err)
+	}
+	taskExec.Inputs = inputs
+
+	// Build params: start with wrapper's params, merge original task's params,
+	// then merge flow-level overrides.
+	params := make(map[string]any)
+	maps.Copy(params, resolvedWrapper.Params)
+	maps.Copy(params, originalTask.Params)
+	if wrapper.Params != nil {
+		maps.Copy(params, wrapper.Params)
+	}
+	maps.Copy(params, ref.Params)
+
+	// Set ctx.Nested to point to the original task so the wrapper logic
+	// knows which task to invoke.
+	prevNested := execCtx.Nested
+	execCtx.Nested = &types.WrapperRef{
+		Task:   originalTask.Name,
+		Params: originalTask.Params,
+	}
+	defer func() { execCtx.Nested = prevNested }()
+
+	// Execute the wrapper task
+	var outputs map[string]any
+	var execErr error
+
+	if resolvedWrapper.Provider != "" {
+		outputs, execErr = t.executeWithProvider(execCtx, resolvedWrapper, inputs, params)
+		if execErr == nil {
+			if provider, err := execCtx.Providers.Get(resolvedWrapper.Provider); err == nil {
+				providerConfig := provider.GetProvider()
+				if providerConfig.Version != "" {
+					taskExec.ProviderVersion = providerConfig.Version
+					execCtx.Versions[fmt.Sprintf("provider:%s", resolvedWrapper.Provider)] = providerConfig.Version
+				}
+			}
+		}
+	} else {
+		outputs, execErr = t.executeLogic(execCtx, resolvedWrapper, inputs, params)
+	}
+
+	if execErr != nil {
+		taskExec.Status = types.StatusFailed
+		taskExec.Error = execErr
+
+		if resolvedWrapper.Fallback != nil {
+			return taskExec, t.handleFallback(execCtx, taskExec, ref, execErr)
+		}
+		return taskExec, execErr
+	}
+
+	// Publish outputs using the ORIGINAL task's bindings
+	taskExec.Outputs = outputs
+	t.publishOutputs(execCtx, originalTask, outputs, ref.Bind)
+
+	now := time.Now()
+	taskExec.Status = types.StatusCompleted
+	taskExec.CompletedAt = &now
+
+	t.logger.Debug().
+		Str("task", originalTask.Name).
+		Str("wrapper", wrapper.Task).
+		Interface("outputs", outputs).
+		Int64("duration", time.Since(taskExec.StartedAt).Milliseconds()).
+		Msg("Task with wrapper completed successfully")
+
+	return taskExec, nil
+}
+
 // resolveTaskInheritance resolves task inheritance.
 func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, error) {
 	if task.Inherits == "" {
@@ -369,6 +478,7 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 		Timeout:     task.Timeout,
 		Retry:       task.Retry,
 		Metadata:    make(map[string]any),
+		Wrapper:     task.Wrapper,
 	}
 
 	if resolved.Provider == "" {
@@ -388,6 +498,9 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 	}
 	if resolved.Params == nil && resolvedParent.Params != nil {
 		resolved.Params = resolvedParent.Params
+	}
+	if resolved.Wrapper == nil {
+		resolved.Wrapper = resolvedParent.Wrapper
 	}
 
 	maps.Copy(resolved.Metadata, resolvedParent.Metadata)

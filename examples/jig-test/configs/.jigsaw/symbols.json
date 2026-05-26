@@ -1,0 +1,214 @@
+{
+  "version": "2",
+  "generated_at": "2026-05-26T06:44:45.729544Z",
+  "binary": "jig-test",
+  "logic": [
+    {
+      "name": "build_response",
+      "description": "Build final HTTP response",
+      "version": "3.0.1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "parsed_query": {
+            "type": "string"
+          },
+          "cache_hit": {
+            "type": "boolean"
+          },
+          "cached_result": true
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "parsed_query",
+          "cache_hit",
+          "cached_result"
+        ]
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "response": true
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "response"
+        ]
+      },
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "skippable_inputs": [
+        "cache_hit",
+        "cached_result"
+      ]
+    },
+    {
+      "name": "cache_wrapper",
+      "description": "Caches outputs of a nested task. Cache key built from listed input fields.",
+      "version": "0.1.0",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ttl": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "keys",
+          "ttl"
+        ]
+      }
+    },
+    {
+      "name": "check_cache",
+      "description": "Check cache for existing search results",
+      "version": "1.5.2",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "parsed_query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "parsed_query"
+        ]
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cache_hit": {
+            "type": "boolean"
+          },
+          "cached_result": true
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "cache_hit",
+          "cached_result"
+        ]
+      },
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object"
+      }
+    },
+    {
+      "name": "parse_and_validate_params",
+      "description": "Parse and validate search query parameters",
+      "version": "2.1.0",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "Q": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "Q"
+        ]
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "parsed_query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "parsed_query"
+        ]
+      },
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_length": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "max_length"
+        ]
+      }
+    },
+    {
+      "name": "search",
+      "description": "Mock search: returns a short slice of synthetic hits for the query.",
+      "version": "0.1.0",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "query"
+        ]
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "results"
+        ]
+      },
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object"
+      }
+    }
+  ],
+  "providers": [
+    {
+      "name": "cache",
+      "type": "cache"
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package validator
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/rs/zerolog"
@@ -27,6 +28,10 @@ func (v *Validator) ValidateConfig(config *types.Config) error {
 		if err := v.validateTask(task); err != nil {
 			return fmt.Errorf("invalid task %q: %w", name, err)
 		}
+	}
+
+	if err := v.validateWrappers(config); err != nil {
+		return err
 	}
 
 	for name, flow := range config.Flows {
@@ -197,6 +202,34 @@ func (v *Validator) validateEndpoint(endpoint *types.Endpoint, config *types.Con
 		}
 	}
 
+	return nil
+}
+
+// validateWrappers walks every task.Wrapper.Task pointer, checks that the
+// referenced wrapper task exists, and detects cycles (A wraps B wraps A).
+// Cycles are flagged once with the full path so the user can untangle them.
+func (v *Validator) validateWrappers(config *types.Config) error {
+	for name, task := range config.Tasks {
+		if task.Wrapper == nil || task.Wrapper.Task == "" {
+			continue
+		}
+		visited := map[string]int{name: 0}
+		path := []string{name}
+		cur := task
+		for cur.Wrapper != nil && cur.Wrapper.Task != "" {
+			next := cur.Wrapper.Task
+			nextTask, ok := config.Tasks[next]
+			if !ok {
+				return fmt.Errorf("task %q: wrapper task %q not found", path[len(path)-1], next)
+			}
+			if _, seen := visited[next]; seen {
+				return fmt.Errorf("wrapper cycle detected: %s -> %s", strings.Join(path, " -> "), next)
+			}
+			visited[next] = len(path)
+			path = append(path, next)
+			cur = nextTask
+		}
+	}
 	return nil
 }
 

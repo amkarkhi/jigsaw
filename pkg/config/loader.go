@@ -153,6 +153,7 @@ type rawTask struct {
 	Timeout     int            `yaml:"timeout"`
 	Retry       int            `yaml:"retry"`
 	Metadata    map[string]any `yaml:"metadata"`
+	Wrapper     *types.WrapperRef `yaml:"wrapper"`
 
 	// Forbidden legacy fields — presence triggers a load error.
 	Inputs  yaml.Node `yaml:"inputs"`
@@ -180,6 +181,7 @@ func (r *rawTask) toTask() (*types.Task, error) {
 		Timeout:     r.Timeout,
 		Retry:       r.Retry,
 		Metadata:    r.Metadata,
+		Wrapper:     r.Wrapper,
 	}, nil
 }
 

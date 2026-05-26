@@ -49,6 +49,10 @@ tasks:
       defaults: {}
       target_task: task_name
       providers: [provider1, provider2]
+    wrapper:  # optional - NEW!
+      task: wrapper_task_name
+      params:
+        key: value
     inherits: parent_task  # optional
 ```
 
@@ -392,6 +396,49 @@ Response:
 ```
 
 ## 🎯 Common Patterns
+
+### Wrapper Pattern (NEW!)
+
+**Define a generic wrapper once:**
+
+```yaml
+# configs/tasks/cache.yml
+tasks:
+  - name: cache
+    description: Generic cache wrapper
+    logic: cache_wrapper
+```
+
+**Apply to any task:**
+
+```yaml
+# configs/tasks/search.yml
+tasks:
+  - name: search
+    logic: search
+    wrapper:
+      task: cache
+      params:
+        keys: [query]    # Fields for cache key
+        ttl: 120s        # Cache duration
+```
+
+**Use in flows (wrapper is automatic):**
+
+```yaml
+flows:
+  - name: search_flow
+    tasks:
+      - name: search    # Caching happens automatically!
+```
+
+**Benefits:**
+- ✅ Flows stay clean (no wrapper boilerplate)
+- ✅ Wrappers are reusable across all tasks
+- ✅ Transparent I/O (wrapper sees same inputs/outputs)
+- ✅ Use for caching, metrics, rate limiting, retry logic
+
+👉 [Full wrapper guide](WRAPPER_PATTERN.md)
 
 ### Caching Pattern
 

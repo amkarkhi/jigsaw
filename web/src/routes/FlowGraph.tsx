@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useParams, Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactFlow, {
   Background,
   Connection,
@@ -67,10 +67,11 @@ interface NodeData {
   // Full chain of enclosing parallel-branch labels, outermost first.
   // Rendered as a single dotted path chip on the node.
   branchPath?: string[];
-  // Inner logic this task wraps (taken from params.inner). When set, the
-  // node renders as a container around a smaller chip naming the inner
-  // logic. Read-only signal — editing happens in the side panel.
-  wrapsLogic?: string;
+  // Name of the wrapper task that intercepts this task's execution
+  // (Task.Wrapper.Task in YAML, surfaced via TaskSummary.wrapped_by).
+  // When set, the node renders inside a dashed container labelled with
+  // the wrapper. Read-only signal — editing happens in the side panel.
+  wrappedBy?: string;
   selected: boolean;
   isStart: boolean;
   isEnd: boolean;
@@ -92,6 +93,7 @@ interface CtxMenu {
 
 function FlowGraphInner() {
   const { name } = useParams();
+  const navigate = useNavigate();
   const [flow, setFlow] = useState<Flow | null>(null);
   const [filePath, setFilePath] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -131,12 +133,6 @@ function FlowGraphInner() {
   // Per-node input/output bindings, keyed by canvas node id. Compiled into the
   // emitted YAML on save.
   const [bindings, setBindings] = useState<Record<string, Bind | undefined>>({});
-
-  // Per-node TaskRef.params overrides, keyed by canvas node id. Currently used
-  // read-only to render flow-level wrapper info (params.inner). Saving these
-  // back into YAML is not yet wired; edits would need to be applied during
-  // save and undo/redo snapshotting alongside `bindings`.
-  const [refParams, setRefParams] = useState<Record<string, Record<string, unknown> | undefined>>({});
 
   // Per-parallel-block configuration, keyed by the branchPath prefix that
   // *contains* this fork. The outermost fork is keyed "", a fork nested
@@ -221,13 +217,11 @@ function FlowGraphInner() {
         const canvas = decompile(f, layout);
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
-        const nodeRefParams = collectRefParams(canvas, f);
 
         setFilePath(path);
         setFlow(stripLayoutFromFlow(f)); // canonical state holds no layout; save() re-embeds it
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
-        setRefParams(nodeRefParams);
         setParallelConfigs(collectParallelConfigs(f.tasks));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
@@ -314,12 +308,12 @@ function FlowGraphInner() {
     return map;
   }, [validation]);
 
-  // Look up wraps_logic by task name from the palette so the renderer can
-  // draw wrapper tasks as containers around the inner logic chip.
-  const wrapsByTaskName = useMemo(() => {
+  // Look up wrapper task per task name from the palette so the renderer can
+  // draw a dashed container around tasks that have a task-level `wrapper:`.
+  const wrappedByTaskName = useMemo(() => {
     const map: Record<string, string> = {};
     for (const t of palette) {
-      if (t.wraps_logic) map[t.name] = t.wraps_logic;
+      if (t.wrapped_by) map[t.name] = t.wrapped_by;
     }
     return map;
   }, [palette]);
@@ -339,14 +333,11 @@ function FlowGraphInner() {
             hasError: validation.problemNodes.has(n.id),
             hasWarning: validation.warnNodes.has(n.id) && !validation.problemNodes.has(n.id),
             issues: issuesByNode[n.id],
-            wrapsLogic:
-              (typeof refParams[n.id]?.inner === "string"
-                ? (refParams[n.id]!.inner as string)
-                : undefined) ?? wrapsByTaskName[d.taskName],
+            wrappedBy: wrappedByTaskName[d.taskName],
           },
         };
       }),
-    [nodes, selectedNode, startEnd, validation, issuesByNode, wrapsByTaskName, refParams],
+    [nodes, selectedNode, startEnd, validation, issuesByNode, wrappedByTaskName],
   );
   const styledEdges = useMemo(
     () =>
@@ -811,13 +802,11 @@ function FlowGraphInner() {
         const canvas = decompile(stripLayoutFromFlow(f), embedded);
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
-        const nodeRefParams = collectRefParams(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
-        setRefParams(nodeRefParams);
       });
       setFlash(`Loaded draft "${d.label}". Not saved to disk yet.`);
     } catch (e) {
@@ -835,13 +824,11 @@ function FlowGraphInner() {
         const canvas = decompile(stripLayoutFromFlow(f));
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
-        const nodeRefParams = collectRefParams(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
-        setRefParams(nodeRefParams);
       });
     } catch (e) {
       setYamlError((e as Error).message);
@@ -948,6 +935,28 @@ function FlowGraphInner() {
           />
           <button onClick={() => setYamlOpen((v) => !v)} className={`btn ${yamlOpen ? "btn-primary" : ""}`}>
             {yamlOpen ? "Hide YAML" : "Show YAML"}
+          </button>
+          <button
+            onClick={() => {
+              const text = currentDocYaml();
+              if (!text) {
+                setDiags([{ Severity: "error", File: "", Message: "graph can't be compiled — fix errors before testing" }]);
+                return;
+              }
+              const key = Math.random().toString(36).slice(2, 10);
+              try {
+                sessionStorage.setItem(`playground:custom:${key}`, text);
+              } catch {
+                setFlash("Could not stash flow for playground (sessionStorage unavailable)");
+                return;
+              }
+              navigate(`/playground?customKey=${key}`);
+            }}
+            className="btn"
+            disabled={validation.hasErrors}
+            title={validation.hasErrors ? "Fix errors before testing" : "Test this flow in the playground (uses current unsaved state)"}
+          >
+            Test in playground
           </button>
           <button
             onClick={() => setDraftSaveOpen(true)}
@@ -2461,11 +2470,11 @@ function ContextMenu({
 // ---------------------------------------------------------------------------
 
 function TaskNode({ data }: NodeProps<NodeData>) {
-  const isWrapper = !!data.wrapsLogic;
+  const isWrapped = !!data.wrappedBy;
   const cls = [
     "gnode",
     "task",
-    isWrapper ? "wrapper" : "",
+    isWrapped ? "wrapper" : "",
     data.selected ? "selected" : "",
     data.hasError ? "node-error" : "",
     data.hasWarning ? "node-warning" : "",
@@ -2479,9 +2488,9 @@ function TaskNode({ data }: NodeProps<NodeData>) {
         {data.branchPath && data.branchPath.length > 0 && (
           <span className="chip branch">⌥ {data.branchPath.join("·")}</span>
         )}
-        {isWrapper && (
-          <span className="chip wraps" title={`Dispatches logic "${data.wrapsLogic}" via Engine.Invoke`}>
-            ↻ wraps
+        {isWrapped && (
+          <span className="chip wraps" title={`Wrapped by task "${data.wrappedBy}" — every execution goes through it first`}>
+            ↻ wrapped
           </span>
         )}
         {(data.hasError || data.hasWarning) && (
@@ -2494,13 +2503,13 @@ function TaskNode({ data }: NodeProps<NodeData>) {
           @{data.label}
         </div>
       )}
-      {isWrapper && (
+      {isWrapped && (
         <div
           className="gnode-inner"
-          title="Inner logic this wrapper invokes at runtime"
+          title="Wrapper task that intercepts this task's execution"
         >
-          <span className="gnode-inner-arrow">↳</span>
-          <span className="gnode-inner-name mono">{data.wrapsLogic}</span>
+          <span className="gnode-inner-arrow">↑</span>
+          <span className="gnode-inner-name mono">{data.wrappedBy}</span>
         </div>
       )}
       <Handle type="source" position={Position.Bottom} className="port port-bottom" />
@@ -2521,7 +2530,6 @@ function IssueChip({
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const cls = severity === "error" ? "chip err" : "chip warn";
-  const summary = issues.map((i) => i.message).join("\n");
   // Portal the popup to <body> with position:fixed so it escapes ReactFlow's
   // stacking context and never gets clipped by the canvas or node z-order.
   function show(e: React.MouseEvent) {
@@ -2533,7 +2541,6 @@ function IssueChip({
     <>
       <span
         className={cls}
-        title={summary || undefined}
         onMouseEnter={show}
         onMouseLeave={() => setOpen(false)}
         style={{ cursor: "help" }}
@@ -2718,33 +2725,6 @@ function applyOverrides(
     });
   }
   return attach(tasks);
-}
-
-// collectRefParams walks the decompiled flow and pairs each TaskRef's
-// params (per-flow overrides) with the canvas node that represents it.
-function collectRefParams(
-  canvas: Canvas,
-  flow: Flow,
-): Record<string, Record<string, unknown> | undefined> {
-  const byName: Record<string, (Record<string, unknown> | undefined)[]> = {};
-  walk(flow.tasks);
-  function walk(refs: TaskRef[]) {
-    for (const r of refs) {
-      if (r.name) {
-        (byName[r.name] ||= []).push(r.params);
-      } else if (r.parallel) {
-        for (const b of r.parallel.branches) walk(b.tasks);
-      }
-    }
-  }
-  const out: Record<string, Record<string, unknown> | undefined> = {};
-  for (const n of canvas.nodes) {
-    const stack = byName[n.taskName];
-    if (stack && stack.length > 0) {
-      out[n.id] = stack.shift();
-    }
-  }
-  return out;
 }
 
 // collectBindings walks the decompiled flow and pairs each TaskRef's

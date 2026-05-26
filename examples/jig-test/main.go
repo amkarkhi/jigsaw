@@ -186,12 +186,12 @@ func (m *memCache) Set(_ context.Context, key string, value []byte, ttl time.Dur
 
 var processMem = &memCache{items: map[string]memCacheItem{}}
 
-// ---- search + cache_wrapper: task-nesting via ctx.Nested -------------------
+// ---- search + cache_wrapper: task wrappers via ctx.Nested -----------------
 //
-// SearchLogic is a plain typed-I/O logic. The interesting bit is that the
-// cache_wrapper task below declares it as its `nested: { task: search }` so
-// the wrapper's Go code can call it via ctx.Engine.InvokeTask without naming
-// it in params.
+// SearchLogic is a plain typed-I/O logic. In tasks/common.yml, the `search`
+// task declares `wrapper: { task: cache }` — so every execution of `search`
+// is intercepted by the `cache` task, whose logic (CacheWrapperLogic below)
+// reads ctx.Nested.Task to dispatch the original via Engine.InvokeTask.
 
 type searchIn struct {
 	Query string `json:"query"`
@@ -226,23 +226,27 @@ func (SearchLogic) Run(ctx *types.ExecutionContext, in searchIn, _ searchParams)
 	}, nil
 }
 
-// cache_wrapper is a generic cache that wraps *whatever task it is told to
-// wrap* via the task's `nested:` config. It is distinct from cached_call in
-// two ways:
+// cache_wrapper is a generic cache that wraps *whatever task it is bound to*
+// via that task's `wrapper:` field. Two notable properties:
 //
 //  1. The inner is a *task* (resolved via Engine.InvokeTask), not a logic.
 //     Provider, default params, and inheritance all apply to the inner.
-//  2. The inner reference comes from `ctx.Nested` (top-level YAML field),
-//     not from `params.inner` — so the wrapper config reads as
+//  2. The inner reference comes from `ctx.Nested` (set by the engine when
+//     dispatching the wrapper),
+//     not from `params.inner`. The wrapped task declares its wrapper:
 //
-//       logic: cache_wrapper
-//       nested: { task: search }
-//       params: { keys: [query], ttl: 60s }
+//       - name: search
+//         logic: search
+//         wrapper:
+//           task: cache
+//           params:
+//             keys: [query]
+//             ttl: 60s
 //
-//     The `keys` list names which fields of the (raw, schemaless) input map
-//     to concatenate when building the cache key. The wrapper's I/O is
-//     map[string]any so bind.in/out at the flow level decide what flows in
-//     and out — typically the same shape as the inner task.
+//     The `keys` list names which fields of the (schemaless) input map to
+//     fold into the cache key. The wrapper's I/O is map[string]any so values
+//     flow through unchanged; the *wrapped* task's schema and the flow ref's
+//     bind decide what's read from / written to scope.
 type cacheWrapperParams struct {
 	Keys []string `json:"keys"`
 	TTL  string   `json:"ttl"`
@@ -268,7 +272,7 @@ func (CacheWrapperLogic) Run(
 		return nil, fmt.Errorf("cache_wrapper: ctx.Engine is nil (run via Engine.ExecuteFlow)")
 	}
 	if ctx.Nested == nil || ctx.Nested.Task == "" {
-		return nil, fmt.Errorf("cache_wrapper: this task must declare `nested: { task: <name> }`")
+		return nil, fmt.Errorf("cache_wrapper: ctx.Nested is empty (this logic must be used as a wrapper, not invoked directly)")
 	}
 
 	// Backend: provider connection if it satisfies CacheBackend, else memory.

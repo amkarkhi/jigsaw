@@ -39,6 +39,10 @@ Modify configurations on the fly. Changes are applied instantly without restarti
 
 Create base tasks and flows, then extend them with inheritance. DRY principle applied to configurations.
 
+### 🔄 **Generic Wrappers**
+
+Add cross-cutting concerns (caching, metrics, logging) at the task level. Wrappers are reusable, transparent, and keep flows clean.
+
 ### 🛡️ **Flexible Error Handling**
 
 Multiple fallback strategies: abort, continue with defaults, switch tasks, or failover to alternate providers.
@@ -84,8 +88,8 @@ HTTP Request → Endpoint → Flow Router → Flow Executor
 - **Endpoint**: HTTP routes that trigger flows
 - **Context**: Runtime data carrier that passes through the flow
 
-👉 [Read the full architecture documentation](docs/ARCHITECTURE.md)  
-👉 [View the ERD and data model](docs/ERD.md)
+👉 [Read the full architecture documentation](docs/reference/ARCHITECTURE.md)  
+👉 [View the ERD and data model](docs/reference/ERD.md)
 
 ---
 
@@ -228,6 +232,75 @@ endpoints:
       - sub: 2
         flow_name: advanced_search_flow
 ```
+
+---
+
+## 🔄 Generic Task Wrappers
+
+**New in v2.0**: Define reusable wrappers at the task level for clean, maintainable configurations.
+
+### What are Wrappers?
+
+Wrappers allow you to add cross-cutting concerns (caching, metrics, logging, rate limiting) to tasks without cluttering your flow definitions. Define the wrapper once at the task level, and it automatically applies wherever the task is used.
+
+### Example: Cache Wrapper
+
+**Define the wrapper task:**
+
+```yaml
+# configs/tasks/cache.yml
+tasks:
+  - name: cache
+    description: Generic cache wrapper
+    logic: cache_wrapper
+```
+
+**Use the wrapper in any task:**
+
+```yaml
+# configs/tasks/search.yml
+tasks:
+  - name: search
+    description: Search with automatic caching
+    logic: search
+    wrapper:
+      task: cache
+      params:
+        keys: [query]      # Cache key fields
+        ttl: 120s          # Cache TTL
+```
+
+**Clean flow definition:**
+
+```yaml
+# configs/flows/search_flow.yml
+flows:
+  - name: search_flow
+    tasks:
+      - name: search      # Wrapper automatically applied!
+        bind:
+          in:
+            query: query
+          out:
+            results: search_results
+```
+
+### Benefits
+
+- ✅ **Cleaner Flows** - No wrapper boilerplate in flow definitions
+- ✅ **Reusable** - One task definition works everywhere
+- ✅ **Transparent I/O** - Wrapper inherits task's input/output schema
+- ✅ **Generic** - Same wrapper can wrap any task
+
+### Common Use Cases
+
+1. **Caching** - Automatically cache task results
+2. **Metrics** - Track execution time and success rates
+3. **Rate Limiting** - Throttle task execution
+4. **Retry Logic** - Add exponential backoff
+5. **Circuit Breaking** - Prevent cascading failures
+
+👉 [Read the full wrapper pattern guide](docs/reference/WRAPPER_PATTERN.md)
 
 ---
 
@@ -390,7 +463,7 @@ Valid strategies: `abort`, `continue`, `switch_provider`.
 Run independent sequences of tasks concurrently. Each `parallel:` block declares
 N labeled **branches**, each branch is a sequence of tasks, and the flow only
 continues after every branch has joined. See
-[docs/parallel-execution.md](docs/parallel-execution.md) for the full design.
+[docs/reference/parallel-execution.md](docs/reference/parallel-execution.md) for the full design.
 
 ```yaml
 flows:
@@ -576,10 +649,10 @@ jigsaw/
 
 ## 🎓 Learn More
 
-- 📖 [Architecture Guide](docs/ARCHITECTURE.md) - Deep dive into system design
-- 🗺️ [ERD Documentation](docs/ERD.md) - Entity relationships and data model
+- 📚 [Documentation index](docs/README.md) - Guides, reference, design
+- 📖 [Architecture Guide](docs/reference/ARCHITECTURE.md) - Deep dive into system design
+- 🗺️ [ERD Documentation](docs/reference/ERD.md) - Entity relationships and data model
 - 💡 [Examples](examples/) - Real-world usage examples
-- 🔧 [API Reference](docs/API.md) - Go package documentation
 
 ---
 

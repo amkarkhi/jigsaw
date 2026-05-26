@@ -1,4 +1,4 @@
-# Reference YAML for the parallel execution model. See docs/parallel-execution.md
+# Reference YAML for the parallel execution model. See docs/reference/parallel-execution.md
 # for the full design and authoring guidance.
 #
 # This file is documentation-only; it lives under configs/template so it

@@ -4,6 +4,13 @@ All notable changes to the Jigsaw project.
 
 ## [Unreleased]
 
+### Added
+- **Generic Task Wrappers** - Define reusable wrappers at the task level for cross-cutting concerns (caching, metrics, logging, rate limiting). See [docs/reference/WRAPPER_PATTERN.md](docs/reference/WRAPPER_PATTERN.md)
+  - New `wrapper` field on Task configuration
+  - Wrappers inherit task's I/O schema (transparent I/O)
+  - Wrapper receives `ctx.Nested` pointing to wrapped task
+  - Web UI support for viewing and editing wrapper configuration
+
 ### Changed — logic-handler refactor (BREAKING)
 - `LogicHandler` is now an interface (`Meta() LogicMeta`, `InputSchema()`, `OutputSchema()`, `ParamsSchema()`, `Execute`). The old function-typed handler is gone.
 - Registration: use `eng.Register(MyLogic{})` (reflection path) or `engine.RegisterTyped[I,O,P](eng, name, fn)` (generic closure path). `MustRegisterLogic(name, fn)` is removed.
@@ -18,7 +25,7 @@ All notable changes to the Jigsaw project.
 - **BREAKING**: Moved `validator` package from `internal/validator` to `pkg/validator`
 
 ### Added
-- `docs/EXTERNAL_USAGE.md` - Guide for using Jigsaw as an external package
+- `docs/guides/EXTERNAL_USAGE.md` - Guide for using Jigsaw as an external package
 - `pkg/symbols` — manifest format for CLI tooling (symbols.json, schema version 2)
 - `pkg/lsp` — LSP server for editor diagnostics
 
@@ -109,4 +116,4 @@ func main() {
 - All packages under `pkg/` are public and can be imported by external projects
 - The `internal/` directory contains private implementation details
 - Configuration validation is essential before executing flows
-- See `docs/EXTERNAL_USAGE.md` for comprehensive usage examples
+- See `docs/guides/EXTERNAL_USAGE.md` for comprehensive usage examples

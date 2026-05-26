@@ -33,6 +33,27 @@ func New(config *types.Config, validator types.Validator, logger zerolog.Logger)
 	}
 }
 
+// Config returns the engine's config. Read-only — mutating the returned
+// value will corrupt running flow executions.
+func (e *Engine) Config() *types.Config {
+	return e.config
+}
+
+// FlowExecutor returns the engine's own flow executor (the one used by
+// ExecuteFlow). It is bound to the engine's config and logic registry.
+func (e *Engine) FlowExecutor() *FlowExecutor {
+	return e.executor
+}
+
+// FlowExecutorFor returns a FlowExecutor that uses the engine's logic
+// registry but resolves tasks against the supplied config. Use this when
+// callers (e.g. the playground) need to run a synthetic config — say a
+// one-task flow with an injected task definition — through the real
+// handlers without mutating the engine's own config.
+func (e *Engine) FlowExecutorFor(cfg *types.Config) *FlowExecutor {
+	return NewFlowExecutor(cfg, e.logger, e.logicRegistry)
+}
+
 // ListLogicHandlers returns all registered logic handler names.
 func (e *Engine) ListLogicHandlers() []string {
 	return e.logicRegistry.list()
@@ -219,8 +240,12 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 		inputs = map[string]any{}
 	}
 
+	// Clear ctx.Nested while the inner runs: ctx.Nested is meaningful only to
+	// the wrapper logic that asked us to dispatch this task. The inner
+	// shouldn't see its wrapper's Nested. Restore on return so the wrapper
+	// can keep using it after we hand control back.
 	prevNested := ctx.Nested
-	ctx.Nested = resolved.Nested
+	ctx.Nested = nil
 	defer func() { ctx.Nested = prevNested }()
 
 	if resolved.Provider != "" {
