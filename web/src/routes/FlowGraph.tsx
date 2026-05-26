@@ -45,6 +45,8 @@ interface UndoSnapshot {
   overrides: Record<string, TaskRef["overrides"]>;
   // bindings per node id; input/output wiring for each task
   bindings: Record<string, Bind | undefined>;
+  // TaskRef.params per node id; per-placement parameter overrides.
+  paramOverrides: Record<string, Record<string, unknown> | undefined>;
 }
 
 const NODE_TYPES = {
@@ -134,6 +136,13 @@ function FlowGraphInner() {
   // emitted YAML on save.
   const [bindings, setBindings] = useState<Record<string, Bind | undefined>>({});
 
+  // Per-node TaskRef.params overrides, keyed by canvas node id. Shallow-merged
+  // on top of the underlying task's default params at execution time so the
+  // same task can be placed multiple times with different settings (e.g. a
+  // metric label that differs per placement). Round-trip via collectParamOverrides
+  // (load) and applyParamOverrides (save / YAML mirror).
+  const [paramOverrides, setParamOverrides] = useState<Record<string, Record<string, unknown> | undefined>>({});
+
   // Per-parallel-block configuration, keyed by the branchPath prefix that
   // *contains* this fork. The outermost fork is keyed "", a fork nested
   // inside branch "alpha" is keyed "alpha", and so on. Round-trip happens via
@@ -217,11 +226,13 @@ function FlowGraphInner() {
         const canvas = decompile(f, layout);
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
+        const nodeParams = collectParamOverrides(canvas, f);
 
         setFilePath(path);
         setFlow(stripLayoutFromFlow(f)); // canonical state holds no layout; save() re-embeds it
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
+        setParamOverrides(nodeParams);
         setParallelConfigs(collectParallelConfigs(f.tasks));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
@@ -282,6 +293,11 @@ function FlowGraphInner() {
         logic: handler.name,
         inputs: flattenSchemaProps(handler.input_schema) ?? [],
         outputs: flattenSchemaProps(handler.output_schema) ?? [],
+        // params_schema may be null even when the logic is registered — the
+        // logic may simply declare no params. flattenParamFields() returns
+        // [] in that case, which the editor distinguishes from "no schema
+        // available at all" (entry .params === undefined).
+        params: flattenParamFields(handler.params_schema),
       };
     }
     return map;
@@ -363,10 +379,11 @@ function FlowGraphInner() {
         position: { ...n.position },
       })),
       edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+      paramOverrides: { ...paramOverrides },
       overrides: { ...overrides },
       bindings: { ...bindings },
     };
-  }, [nodes, edges, overrides, bindings]);
+  }, [nodes, edges, overrides, bindings, paramOverrides]);
 
   const commit = useCallback(
     (mutate: () => void) => {
@@ -407,10 +424,11 @@ function FlowGraphInner() {
     if (!compiled.ok) return;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
     const withBindings = applyBindings(applied, canvas, bindings);
-    const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
+    const withParams = applyParamOverrides(withBindings, canvas, paramOverrides);
+    const withParallel = applyParallelConfigs(withParams, parallelConfigs);
     const merged: Flow = { ...flow, tasks: withParallel };
     setYamlDraft(yaml.dump({ flows: [merged] }, { lineWidth: 100, noRefs: true }));
-  }, [nodes, edges, flow, yamlUnlocked, overrides, bindings, parallelConfigs]);
+  }, [nodes, edges, flow, yamlUnlocked, overrides, bindings, paramOverrides, parallelConfigs]);
 
   // -------- operations -----------------------------------------------------
 
@@ -510,6 +528,15 @@ function FlowGraphInner() {
       setBindings((cur) => ({
         ...cur,
         [nodeId]: next,
+      })),
+    );
+  }
+
+  function setNodeParamOverrides(nodeId: string, next: Record<string, unknown> | undefined) {
+    commit(() =>
+      setParamOverrides((cur) => ({
+        ...cur,
+        [nodeId]: next && Object.keys(next).length > 0 ? next : undefined,
       })),
     );
   }
@@ -753,6 +780,7 @@ function FlowGraphInner() {
     );
     setOverrides(snap.overrides);
     setBindings(snap.bindings);
+    setParamOverrides(snap.paramOverrides ?? {});
     setSelectedNode(null);
     setSelectedEdge(null);
   }
@@ -767,7 +795,8 @@ function FlowGraphInner() {
     if (!compiled.ok) return null;
     const applied = applyOverrides(compiled.tasks, canvas, overrides);
     const withBindings = applyBindings(applied, canvas, bindings);
-    const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
+    const withParams = applyParamOverrides(withBindings, canvas, paramOverrides);
+    const withParallel = applyParallelConfigs(withParams, parallelConfigs);
     const layout: Record<string, { x: number; y: number }> = {};
     for (const n of canvas.nodes) {
       layout[layoutKey(n)] = n.position;
@@ -802,11 +831,13 @@ function FlowGraphInner() {
         const canvas = decompile(stripLayoutFromFlow(f), embedded);
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
+        const nodeParams = collectParamOverrides(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
+        setParamOverrides(nodeParams);
       });
       setFlash(`Loaded draft "${d.label}". Not saved to disk yet.`);
     } catch (e) {
@@ -824,11 +855,13 @@ function FlowGraphInner() {
         const canvas = decompile(stripLayoutFromFlow(f));
         const nodeOverrides = collectOverrides(canvas, f);
         const nodeBindings = collectBindings(canvas, f);
+        const nodeParams = collectParamOverrides(canvas, f);
         setFlow(stripLayoutFromFlow(f));
         setNodes(canvasToRFNodes(canvas));
         setEdges(canvasToRFEdges(canvas));
         setOverrides(nodeOverrides);
         setBindings(nodeBindings);
+        setParamOverrides(nodeParams);
       });
     } catch (e) {
       setYamlError((e as Error).message);
@@ -849,7 +882,8 @@ function FlowGraphInner() {
       }
       const applied = applyOverrides(compiled.tasks, canvas, overrides);
       const withBindings = applyBindings(applied, canvas, bindings);
-      const withParallel = applyParallelConfigs(withBindings, parallelConfigs);
+      const withParams = applyParamOverrides(withBindings, canvas, paramOverrides);
+      const withParallel = applyParallelConfigs(withParams, parallelConfigs);
       // Build the layout map once: keyed by taskName + label so a task
       // placed multiple times in the flow keeps distinct positions.
       const layout: Record<string, { x: number; y: number }> = {};
@@ -1110,6 +1144,7 @@ function FlowGraphInner() {
                 taskInfo={selectedTask}
                 overrides={overrides[selectedNode]}
                 bindings={bindings[selectedNode]}
+                paramOverrides={paramOverrides[selectedNode]}
                 allBranchPaths={nodes.map((n) => (n.data as NodeData).branchPath).filter(Boolean) as string[][]}
                 parallelConfigs={parallelConfigs}
                 onChangeParallelConfig={(key, next) =>
@@ -1124,6 +1159,7 @@ function FlowGraphInner() {
                 }
                 onChangeOverrides={(next) => setNodeOverrides(selectedNode, next)}
                 onChangeBindings={(next) => setNodeBindings(selectedNode, next)}
+                onChangeParamOverrides={(next) => setNodeParamOverrides(selectedNode, next)}
                 onChangeLabel={(label) => setNodeLabel(selectedNode, label)}
                 onRenameBranchSegment={(prefix, next) => renameBranchPathSegment(prefix, next)}
                 onDelete={() => deleteNode(selectedNode)}
@@ -1317,11 +1353,13 @@ function Inspector({
   taskInfo,
   overrides,
   bindings,
+  paramOverrides,
   allBranchPaths,
   parallelConfigs,
   onChangeParallelConfig,
   onChangeOverrides,
   onChangeBindings,
+  onChangeParamOverrides,
   onChangeLabel,
   onRenameBranchSegment,
   onDelete,
@@ -1334,11 +1372,13 @@ function Inspector({
   taskInfo: TaskSummary | undefined;
   overrides: TaskRef["overrides"];
   bindings: Bind | undefined;
+  paramOverrides: Record<string, unknown> | undefined;
   allBranchPaths: string[][];
   parallelConfigs: Record<string, ParallelConfig>;
   onChangeParallelConfig: (key: string, next: ParallelConfig) => void;
   onChangeOverrides: (next: TaskRef["overrides"]) => void;
   onChangeBindings: (next: Bind | undefined) => void;
+  onChangeParamOverrides: (next: Record<string, unknown> | undefined) => void;
   onChangeLabel: (label: string) => void;
   onRenameBranchSegment: (prefix: string[], next: string) => void;
   onDelete: () => void;
@@ -1392,6 +1432,13 @@ function Inspector({
         flowTasks={flowTasks}
         targetBranchPath={data.branchPath}
         targetOccurrence={nodeOccurrence}
+      />
+
+      <ParamOverridesEditor
+        taskName={data.taskName}
+        schema={taskSchemas[data.taskName]?.params}
+        value={paramOverrides}
+        onChange={onChangeParamOverrides}
       />
 
       <OverridesEditor
@@ -1974,6 +2021,299 @@ function LabelEditor({
         style={{ width: "100%" }}
       />
     </div>
+  );
+}
+
+// ParamOverridesEditor — edits TaskRef.params (per-placement parameter
+// overrides) via a typed form driven by the task's declared params schema.
+// Each declared param becomes one input row whose widget matches the
+// declared type (number, checkbox, select, text, or JSON for nested
+// objects/arrays). Params are LITERAL values typed by the user — unlike
+// inputs, they can't be wired to other tasks' outputs.
+//
+// The underlying task may also define default params; values left blank
+// here fall through to those defaults at execution time, so the placeholder
+// shows the default for context.
+function ParamOverridesEditor({
+  taskName,
+  schema,
+  value,
+  onChange,
+}: {
+  taskName: string;
+  schema: ParamField[] | undefined;
+  value: Record<string, unknown> | undefined;
+  onChange: (next: Record<string, unknown> | undefined) => void;
+}) {
+  // Underlying task's default params — shown as placeholders on each row so
+  // the user knows what they're overriding. Non-fatal on failure.
+  const [defaultParams, setDefaultParams] = useState<Record<string, unknown>>({});
+  useEffect(() => {
+    let cancelled = false;
+    api.task(taskName)
+      .then((d) => { if (!cancelled) setDefaultParams((d.task.params as Record<string, unknown>) ?? {}); })
+      .catch(() => { if (!cancelled) setDefaultParams({}); });
+    return () => { cancelled = true; };
+  }, [taskName]);
+
+  // schema === undefined means the logic isn't registered, so we can't
+  // render a typed form. schema === [] means it is, and the task simply
+  // declares no params — there's nothing to override.
+  if (schema === undefined) {
+    return (
+      <Section title="Params" storageKey="params" defaultOpen={false}>
+        <div className="meta">
+          No params schema available for task <code>{taskName}</code>. The
+          logic handler isn't registered, so the editor can't render a typed
+          form. Register the logic (or run the dashboard from the host
+          binary) to enable params editing.
+        </div>
+      </Section>
+    );
+  }
+  if (schema.length === 0) {
+    return (
+      <Section title="Params" storageKey="params" defaultOpen={false}>
+        <div className="meta">
+          Task <code>{taskName}</code> declares no params. Nothing to
+          override here.
+        </div>
+      </Section>
+    );
+  }
+
+  const setField = (name: string, fieldValue: unknown) => {
+    const next: Record<string, unknown> = { ...(value ?? {}) };
+    if (fieldValue === undefined) {
+      delete next[name];
+    } else {
+      next[name] = fieldValue;
+    }
+    onChange(Object.keys(next).length > 0 ? next : undefined);
+  };
+
+  const set = value ?? {};
+  const overrideCount = Object.keys(set).length;
+  return (
+    <Section
+      title={`Params${overrideCount > 0 ? ` (${overrideCount} overridden)` : ""}`}
+      storageKey="params"
+      hint={<>Per-placement values. Blank rows fall through to the task's defaults; filled rows override.</>}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {schema.map((field) => (
+          <ParamFieldRow
+            key={field.name}
+            field={field}
+            value={set[field.name]}
+            defaultValue={defaultParams[field.name]}
+            overridden={Object.prototype.hasOwnProperty.call(set, field.name)}
+            onChange={(v) => setField(field.name, v)}
+            onClear={() => setField(field.name, undefined)}
+          />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// ParamFieldRow — one editor row for a declared param. Picks a widget by
+// the field's declared JSON Schema type. Empty value clears the override
+// (falls through to the task's default).
+function ParamFieldRow({
+  field,
+  value,
+  defaultValue,
+  overridden,
+  onChange,
+  onClear,
+}: {
+  field: ParamField;
+  value: unknown;
+  defaultValue: unknown;
+  overridden: boolean;
+  onChange: (v: unknown) => void;
+  onClear: () => void;
+}) {
+  const widget = pickWidget(field, value, defaultValue, onChange);
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 2 }}>
+        <label className="meta" style={{ fontFamily: "var(--mono)" }}>
+          {field.name}
+          {field.required && <span style={{ color: "var(--error, #c84)" }}> *</span>}
+        </label>
+        <span className="meta" style={{ fontSize: 10, opacity: 0.6 }}>{field.type}</span>
+        <span style={{ flex: 1 }} />
+        {overridden && (
+          <button
+            type="button"
+            className="btn"
+            onClick={onClear}
+            style={{ padding: "0 6px", fontSize: 10 }}
+            title="Clear override; fall back to the task's default"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+      {widget}
+      {field.description && (
+        <div className="meta" style={{ fontSize: 10, marginTop: 2 }}>{field.description}</div>
+      )}
+    </div>
+  );
+}
+
+function pickWidget(
+  field: ParamField,
+  value: unknown,
+  defaultValue: unknown,
+  onChange: (v: unknown) => void,
+): React.ReactNode {
+  const placeholder = defaultValue !== undefined
+    ? `default: ${typeof defaultValue === "string" ? defaultValue : JSON.stringify(defaultValue)}`
+    : field.required ? "(required)" : "";
+
+  // Enum → <select>. Add a blank option so the user can clear the override.
+  if (field.enum && field.enum.length > 0) {
+    const cur = value === undefined ? "" : String(value);
+    return (
+      <select
+        className="input"
+        value={cur}
+        onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}
+        style={{ width: "100%" }}
+      >
+        <option value="">
+          {defaultValue !== undefined ? `(default: ${String(defaultValue)})` : "(unset)"}
+        </option>
+        {field.enum.map((v, i) => (
+          <option key={i} value={String(v)}>{String(v)}</option>
+        ))}
+      </select>
+    );
+  }
+
+  // Boolean → tri-state select (unset / true / false). A checkbox can't
+  // distinguish "false override" from "not overridden, default is false".
+  if (field.type === "boolean") {
+    const cur = value === undefined ? "" : value ? "true" : "false";
+    return (
+      <select
+        className="input"
+        value={cur}
+        onChange={(e) => {
+          if (e.target.value === "") onChange(undefined);
+          else onChange(e.target.value === "true");
+        }}
+        style={{ width: "100%" }}
+      >
+        <option value="">
+          {defaultValue !== undefined ? `(default: ${String(defaultValue)})` : "(unset)"}
+        </option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    );
+  }
+
+  // Numbers — keep the input as a string so the user can type freely; only
+  // coerce on commit. Empty string clears the override.
+  if (field.type === "integer" || field.type === "number") {
+    return (
+      <input
+        className="input"
+        type="number"
+        value={value === undefined || value === null ? "" : String(value)}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const s = e.target.value;
+          if (s === "") { onChange(undefined); return; }
+          const n = field.type === "integer" ? parseInt(s, 10) : parseFloat(s);
+          if (Number.isNaN(n)) return;
+          onChange(n);
+        }}
+        style={{ width: "100%" }}
+      />
+    );
+  }
+
+  // Object / array — these can't be edited as primitives. Provide a small
+  // JSON textarea for the rare case where a param is a nested structure.
+  if (field.type.endsWith("[]") || field.type === "array" || field.type === "object" || field.type.startsWith("{")) {
+    return <JSONFieldEditor value={value} placeholder={placeholder} onChange={onChange} />;
+  }
+
+  // Strings (and anything else) — plain text input.
+  return (
+    <input
+      className="input"
+      type="text"
+      value={value === undefined || value === null ? "" : String(value)}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}
+      style={{ width: "100%" }}
+    />
+  );
+}
+
+// JSONFieldEditor — local editor for object/array param values. Keeps the
+// user's text-in-progress so partial JSON doesn't get clobbered on every
+// keystroke. Commits on blur (or Ctrl/Cmd+Enter).
+function JSONFieldEditor({
+  value,
+  placeholder,
+  onChange,
+}: {
+  value: unknown;
+  placeholder: string;
+  onChange: (v: unknown) => void;
+}) {
+  const [text, setText] = useState(() =>
+    value === undefined ? "" : JSON.stringify(value, null, 2),
+  );
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    setText(value === undefined ? "" : JSON.stringify(value, null, 2));
+    setErr(null);
+  }, [value]);
+
+  function commit() {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setErr(null);
+      onChange(undefined);
+      return;
+    }
+    try {
+      onChange(JSON.parse(trimmed));
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  return (
+    <>
+      <textarea
+        className="input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+        }}
+        placeholder={placeholder || "JSON value"}
+        rows={3}
+        spellCheck={false}
+        style={{ width: "100%", fontFamily: "var(--mono)", fontSize: 12 }}
+      />
+      {err && <div className="diag error" style={{ marginTop: 2 }}>{err}</div>}
+    </>
   );
 }
 
@@ -2797,6 +3137,71 @@ function applyBindings(
   return attach(tasks);
 }
 
+// collectParamOverrides walks the decompiled flow and pairs each TaskRef's
+// `params` map with the canvas node that represents it. Empty/undefined
+// params are omitted so the round-trip is a no-op for placements that
+// don't customise params.
+function collectParamOverrides(canvas: Canvas, flow: Flow): Record<string, Record<string, unknown> | undefined> {
+  const byName: Record<string, (Record<string, unknown> | undefined)[]> = {};
+  walk(flow.tasks);
+  function walk(refs: TaskRef[]) {
+    for (const r of refs) {
+      if (r.name) {
+        (byName[r.name] ||= []).push(r.params);
+      } else if (r.parallel) {
+        for (const b of r.parallel.branches) walk(b.tasks);
+      }
+    }
+  }
+  const out: Record<string, Record<string, unknown> | undefined> = {};
+  for (const n of canvas.nodes) {
+    const stack = byName[n.taskName];
+    if (stack && stack.length > 0) {
+      const p = stack.shift();
+      if (p && Object.keys(p).length > 0) out[n.id] = p;
+    }
+  }
+  return out;
+}
+
+// applyParamOverrides reattaches per-node params to the freshly compiled
+// TaskRef tree by matching on task name + occurrence order. Same shape as
+// applyOverrides / applyBindings.
+function applyParamOverrides(
+  tasks: TaskRef[],
+  canvas: Canvas,
+  paramOverrides: Record<string, Record<string, unknown> | undefined>,
+): TaskRef[] {
+  const queues: Record<string, (Record<string, unknown> | undefined)[]> = {};
+  for (const n of canvas.nodes) {
+    const p = paramOverrides[n.id];
+    (queues[n.taskName] ||= []).push(p);
+  }
+  function attach(refs: TaskRef[]): TaskRef[] {
+    return refs.map((r) => {
+      if (r.name) {
+        const q = queues[r.name];
+        if (q && q.length > 0) {
+          const p = q.shift();
+          if (p && Object.keys(p).length > 0) return { ...r, params: p };
+        }
+        return r;
+      }
+      if (r.parallel) {
+        return {
+          ...r,
+          parallel: {
+            ...r.parallel,
+            branches: r.parallel.branches.map((b) => ({ ...b, tasks: attach(b.tasks) })),
+          },
+        };
+      }
+      return r;
+    });
+  }
+  return attach(tasks);
+}
+
 // Parallel block configuration that lives outside the canvas topology. Each
 // parallel block in the flow can carry an `on_branch_failure` directive that
 // the compiler discards, so we round-trip it ourselves keyed by the branch
@@ -3228,11 +3633,28 @@ interface ScopeVar {
   source: string; // task name that produced it (for tooltip)
 }
 
+// Single declared field on a task's params schema. Type drives the editor
+// widget (number input, checkbox, select for enums, plain text). Required
+// surfaces a marker. Description shows as a hint under the input.
+export interface ParamField {
+  name: string;
+  type: string;          // "string" | "integer" | "number" | "boolean" | "array" | "object" | enum label
+  required: boolean;
+  description?: string;
+  enum?: unknown[];      // when set, render as <select>
+  default?: unknown;     // default from the schema itself (rare; usually on the task)
+}
+
 interface TaskSchemaMap {
   [taskName: string]: {
     logic?: string;
     inputs: { name: string; type: string }[];
     outputs: { name: string; type: string }[];
+    // Declared params for this task (derived from the logic's params_schema).
+    // Empty array means "logic registered, no params declared". Undefined
+    // means "no params schema available" (logic not registered → can't
+    // render a typed form).
+    params?: ParamField[];
   };
 }
 
@@ -3359,6 +3781,31 @@ function flattenSchemaProps(
     name,
     type: schemaTypeLabel(resolveSchemaRef(sub, schema)),
   }));
+}
+
+// flattenParamFields expands the top-level properties of a params schema
+// into the editor-friendly ParamField shape. Returns [] when the schema
+// exists but declares no fields, and undefined when no schema is available
+// at all (so the editor can render distinct "no params declared" vs
+// "schema unavailable" states).
+function flattenParamFields(
+  schema: JSONSchema | null | undefined,
+): ParamField[] | undefined {
+  if (!schema) return undefined;
+  const root = resolveSchemaRef(schema, schema);
+  const props = root.properties || {};
+  const required = new Set(root.required || []);
+  return Object.entries(props).map(([name, sub]) => {
+    const resolved = resolveSchemaRef(sub, schema);
+    return {
+      name,
+      type: schemaTypeLabel(resolved),
+      required: required.has(name),
+      description: resolved.description,
+      enum: resolved.enum,
+      default: resolved.default,
+    };
+  });
 }
 
 function resolveSchemaRef(node: JSONSchema, root: JSONSchema): JSONSchema {

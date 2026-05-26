@@ -1,6 +1,6 @@
 # Dashboard — Features & Operator Guide
 
-Companion to `docs/CONFIG_MANAGER.md` (design RFC). This file describes the
+Companion to `docs/design/CONFIG_MANAGER.md` (design RFC). This file describes the
 **shipped** feature surface of the configuration dashboard and how to wire
 it up. The dashboard runs in either `local` mode (developer-on-laptop,
 no auth, writes in place) or `server` mode (auth required, multi-user).
@@ -65,7 +65,7 @@ renders on `/login`. First-time logins auto-provision the user in
 (no password login possible for SSO accounts). Subsequent logins reuse
 the role recorded in the file — admin promotions stick.
 
-Walkthrough: `docs/TESTING_SSO.md`.
+Walkthrough: `./TESTING_SSO.md`.
 
 ---
 

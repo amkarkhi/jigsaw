@@ -472,9 +472,9 @@ flows:
 
 ## Next Steps
 
-- Read the [Architecture Guide](ARCHITECTURE.md) for deep dive
-- Check [ERD Documentation](ERD.md) for data model
-- Explore [examples/](../examples/) for more usage patterns
+- Read the [Architecture Guide](../reference/ARCHITECTURE.md) for deep dive
+- Check [ERD Documentation](../reference/ERD.md) for data model
+- Explore [examples/](../../examples/) for more usage patterns
 - Implement your own task logic handlers
 - Add provider implementations (Redis, MySQL, etc.)
 

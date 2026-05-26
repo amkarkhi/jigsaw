@@ -416,8 +416,8 @@ If you can read the Jigsaw source, prefer these over your own assumptions:
 - `pkg/types/types.go` — authoritative field names for Config/Task/Flow/Provider/Endpoint.
 - `pkg/validator/validator.go` — exact validation rules.
 - `pkg/engine/flow_executor.go` — flow execution + binding semantics.
-- `docs/ARCHITECTURE.md`, `docs/LOGIC_VALIDATION.md`,
-  `docs/parallel-execution.md` — design details.
+- `docs/reference/ARCHITECTURE.md`, `docs/reference/LOGIC_VALIDATION.md`,
+  `docs/reference/parallel-execution.md` — design details.
 
 ## END PROMPT
 
