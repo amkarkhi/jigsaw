@@ -417,7 +417,7 @@ func processJob(job Job) error {
 ```go
 // Build a flow with two concurrent branches, then a downstream task that
 // reads each branch's outputs via bind.in using "<branch_label>.<key>".
-// See docs/parallel-execution.md for the full design.
+// See docs/reference/parallel-execution.md for the full design.
 cfg.Tasks["produce"] = &types.Task{Name: "produce", Logic: "produce"}
 cfg.Tasks["collect"] = &types.Task{Name: "collect", Logic: "collect"}
 
@@ -460,6 +460,6 @@ func main() {
 ## Need Help?
 
 - Check `examples/` directory for working examples
-- Read `docs/GETTING_STARTED.md` for full tutorial
-- See `docs/ARCHITECTURE.md` for system design
-- Review `docs/QUICK_REFERENCE.md` for API reference
+- Read `docs/guides/GETTING_STARTED.md` for full tutorial
+- See `docs/reference/ARCHITECTURE.md` for system design
+- Review `docs/guides/QUICK_REFERENCE.md` for API reference

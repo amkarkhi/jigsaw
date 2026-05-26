@@ -438,7 +438,7 @@ flows:
 - ✅ Transparent I/O (wrapper sees same inputs/outputs)
 - ✅ Use for caching, metrics, rate limiting, retry logic
 
-👉 [Full wrapper guide](WRAPPER_PATTERN.md)
+👉 [Full wrapper guide](../reference/WRAPPER_PATTERN.md)
 
 ### Caching Pattern
 

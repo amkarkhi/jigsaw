@@ -336,6 +336,6 @@ If you have existing configurations without versions:
 Versioning in Jigsaw provides powerful capabilities for tracking, debugging, and managing your workflow components. By adopting versioning best practices, you can build more maintainable and observable systems.
 
 For more information, see:
-- [Configuration Guide](./GETTING_STARTED.md)
+- [Configuration Guide](../guides/GETTING_STARTED.md)
 - [Task Documentation](./ARCHITECTURE.md)
-- [Provider Setup](./PACKAGE_USAGE.md)
+- [Provider Setup](../guides/PACKAGE_USAGE.md)

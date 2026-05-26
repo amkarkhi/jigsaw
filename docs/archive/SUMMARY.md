@@ -61,9 +61,9 @@
 
 ### 8. Documentation ✓
 
-- **Architecture documentation** (`docs/ARCHITECTURE.md`)
-- **ERD and data model** (`docs/ERD.md`)
-- **Getting started guide** (`docs/GETTING_STARTED.md`)
+- **Architecture documentation** (`docs/reference/ARCHITECTURE.md`)
+- **ERD and data model** (`docs/reference/ERD.md`)
+- **Getting started guide** (`docs/guides/GETTING_STARTED.md`)
 - **Professional README** (`README.md`)
 - **Example configurations** (`configs/`)
 
@@ -210,7 +210,7 @@ declares `label:`, downstream consumers reference it via
 `from: [branch.]*label` and optionally `field: <output>`. The validator
 enforces reachability statically.
 
-See [parallel-execution.md](parallel-execution.md) for the full design and
+See [parallel-execution.md](../reference/parallel-execution.md) for the full design and
 authoring best practices.
 
 ### 4. Advanced Features (Optional)
@@ -337,9 +337,9 @@ Strategy: switch_provider
 ## 📚 Documentation Links
 
 - [README.md](../README.md) - Main documentation
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
-- [ERD.md](ERD.md) - Data model
-- [GETTING_STARTED.md](GETTING_STARTED.md) - Quick start guide
+- [ARCHITECTURE.md](../reference/ARCHITECTURE.md) - System architecture
+- [ERD.md](../reference/ERD.md) - Data model
+- [GETTING_STARTED.md](../guides/GETTING_STARTED.md) - Quick start guide
 
 ## 🤝 Contributing
 
