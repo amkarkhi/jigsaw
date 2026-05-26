@@ -6,6 +6,10 @@ endpoints:
     flows:
       - sub: 1
         flow_name: basic_search
+      - sub: 2
+        flow_name: nested_search
+    request_params:
+      - query
     metadata:
       rate_limit: 100
       timeout: 30000

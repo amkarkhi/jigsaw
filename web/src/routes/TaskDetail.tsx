@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import yaml from "js-yaml";
-import { api, Diagnostic, FieldDef } from "../api/client";
+import { api, Diagnostic, LogicHandler } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { useUnsavedGuard } from "../hooks/useUnsavedGuard";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { SchemaPanel } from "../components/SchemaPanel";
 
-// Editable task detail. Loads the task's source YAML, exposes the common
-// fields as inputs (label, description, version, timeout, retry, logic,
-// provider, inherits) plus an editable inputs/outputs table. "Show JSON"
-// reveals the merged result for developers. Save writes through /api/files
-// so the full validator runs.
+// Editable task detail. Loads the task's source YAML and exposes editable
+// task-level fields (description, version, timeout, retry, logic, provider,
+// inherits, wrapper). I/O shape is no longer a task property — it lives on
+// the linked logic handler — so this page renders the logic's input/output
+// schema read-only (and links to the logic registry for details).
+// "Show JSON" reveals the merged task for developers. Save writes through
+// /api/files so the full validator runs.
 
 interface EditableTask {
   name: string;
@@ -22,16 +25,18 @@ interface EditableTask {
   logic: string;
   provider: string;
   inherits: string;
-  inputs: FieldDef[];
-  outputs: FieldDef[];
+  wrapper: string;
+  wrapperParams: string;
   _raw: Record<string, unknown>;
 }
 
 export default function TaskDetail() {
   const { name } = useParams();
+  const navigate = useNavigate();
   const detail = useAsync(() => api.task(name!), [name]);
   const usage = useAsync(() => api.taskUsage(name!), [name]);
   const allTasks = useAsync(() => api.tasks(), []);
+  const logicRegistry = useAsync(() => api.logic(), []);
 
   const [filePath, setFilePath] = useState<string>("");
   const [edited, setEdited] = useState<EditableTask | null>(null);
@@ -55,8 +60,8 @@ export default function TaskDetail() {
       logic: t.logic ?? "",
       provider: t.provider ?? "",
       inherits: t.inherits ?? "",
-      inputs: (t.inputs ?? []).map((f) => ({ ...f })),
-      outputs: (t.outputs ?? []).map((f) => ({ ...f })),
+      wrapper: t.wrapper?.task ?? "",
+      wrapperParams: t.wrapper?.params ? JSON.stringify(t.wrapper.params, null, 2) : "",
       _raw: t as unknown as Record<string, unknown>,
     };
     setEdited(ed);
@@ -107,9 +112,25 @@ export default function TaskDetail() {
       writeStringOrDelete(merged, "inherits", edited.inherits);
       writeNumberOrDelete(merged, "timeout", edited.timeout);
       writeNumberOrDelete(merged, "retry", edited.retry);
-      // For inputs/outputs we always rewrite (empty arrays become explicit).
-      merged.inputs = edited.inputs.map(stripEmptyFields);
-      merged.outputs = edited.outputs.map(stripEmptyFields);
+      // Handle wrapper
+      if (edited.wrapper) {
+        let wrapperParams: Record<string, unknown> | undefined;
+        if (edited.wrapperParams.trim()) {
+          try {
+            wrapperParams = JSON.parse(edited.wrapperParams);
+          } catch {
+            // invalid JSON, skip params
+          }
+        }
+        merged.wrapper = { task: edited.wrapper, ...(wrapperParams ? { params: wrapperParams } : {}) };
+      } else {
+        delete merged.wrapper;
+      }
+      // I/O shape lives on the logic handler (struct tags / jsonschema), not
+      // on the task. Strip any stale inputs/outputs left over from older
+      // saves so the YAML stays clean.
+      delete merged.inputs;
+      delete merged.outputs;
 
       tasks[idx] = merged;
       doc.tasks = tasks;
@@ -141,8 +162,8 @@ export default function TaskDetail() {
       logic: t.logic ?? "",
       provider: t.provider ?? "",
       inherits: t.inherits ?? "",
-      inputs: (t.inputs ?? []).map((f) => ({ ...f })),
-      outputs: (t.outputs ?? []).map((f) => ({ ...f })),
+      wrapper: t.wrapper?.task ?? "",
+      wrapperParams: t.wrapper?.params ? JSON.stringify(t.wrapper.params, null, 2) : "",
       _raw: t as unknown as Record<string, unknown>,
     };
     setEdited(ed);
@@ -167,6 +188,13 @@ export default function TaskDetail() {
         {edited.version && <span className="badge">v{edited.version}</span>}
 
         <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button
+            className="btn"
+            onClick={() => navigate(`/playground?task=${encodeURIComponent(edited.name)}`)}
+            title="Open this task in the playground"
+          >
+            Test in playground
+          </button>
           <button className={`btn ${showJSON ? "btn-primary" : ""}`} onClick={() => setShowJSON((v) => !v)}>
             {showJSON ? "Hide JSON" : "Show JSON"}
           </button>
@@ -229,6 +257,21 @@ export default function TaskDetail() {
           <FieldRow label="inherits">
             <input className="input" value={edited.inherits} onChange={(e) => patch("inherits", e.target.value)} placeholder="parent task (optional)" />
           </FieldRow>
+          <FieldRow label="wrapper">
+            <input className="input" value={edited.wrapper} onChange={(e) => patch("wrapper", e.target.value)} placeholder="wrapper task (optional)" />
+          </FieldRow>
+          {edited.wrapper && (
+            <FieldRow label="wrapper params">
+              <textarea 
+                className="input" 
+                value={edited.wrapperParams} 
+                onChange={(e) => patch("wrapperParams", e.target.value)} 
+                placeholder='{"keys": ["query"], "ttl": "120s"}'
+                rows={3}
+                style={{ fontFamily: "monospace", fontSize: 12 }}
+              />
+            </FieldRow>
+          )}
         </DetailCard>
 
         <DetailCard title="Used in">
@@ -251,17 +294,10 @@ export default function TaskDetail() {
         </DetailCard>
       </div>
 
-      <FieldsEditor
-        title="Inputs"
-        side="in"
-        fields={edited.inputs}
-        onChange={(next) => patch("inputs", next)}
-      />
-      <FieldsEditor
-        title="Outputs"
-        side="out"
-        fields={edited.outputs}
-        onChange={(next) => patch("outputs", next)}
+      <LogicSchemaSection
+        logicName={edited.logic}
+        handlers={logicRegistry.data?.handlers ?? []}
+        loading={logicRegistry.loading}
       />
 
       {showJSON && (
@@ -347,75 +383,86 @@ function UsageList({ flows, loading }: { flows: string[]; loading: boolean }) {
   );
 }
 
-function FieldsEditor({
-  title,
-  side,
-  fields,
-  onChange,
+// LogicSchemaSection renders the linked logic handler's input/output schema
+// read-only. Tasks no longer own their I/O shape — it lives on the logic
+// (struct tags + jsonschema manifest) and the logic registry page is the
+// authoritative editor. We show it here for convenience: developers
+// reading a task usually want to see what its inputs/outputs look like.
+function LogicSchemaSection({
+  logicName,
+  handlers,
+  loading,
 }: {
-  title: string;
-  side: "in" | "out";
-  fields: FieldDef[];
-  onChange: (next: FieldDef[]) => void;
+  logicName: string;
+  handlers: LogicHandler[];
+  loading: boolean;
 }) {
-  function update(i: number, patch: Partial<FieldDef>) {
-    onChange(fields.map((f, idx) => (idx === i ? { ...f, ...patch } : f)));
-  }
-  function add() {
-    onChange([...fields, { name: "", type: "string" }]);
-  }
-  function remove(i: number) {
-    onChange(fields.filter((_, idx) => idx !== i));
-  }
-  return (
-    <DetailCard title={`${title} (${fields.length})`} style={{ marginBottom: 16 }}>
-      {fields.length === 0 && <div className="meta" style={{ marginBottom: 8 }}>none</div>}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, 1.5fr) 110px 90px minmax(140px, 1.5fr) 40px", gap: 6, alignItems: "center", marginBottom: 6, fontSize: 11 }}>
-        <div className="meta">name</div>
-        <div className="meta">type</div>
-        <div className="meta">required</div>
-        <div className="meta">{side === "in" ? "from" : "default"}</div>
-        <div></div>
-      </div>
-      {fields.map((f, i) => (
-        <div key={i} style={{ display: "grid", gridTemplateColumns: "minmax(140px, 1.5fr) 110px 90px minmax(140px, 1.5fr) 40px", gap: 6, marginBottom: 6, alignItems: "center" }}>
-          <input className="input" value={f.name} onChange={(e) => update(i, { name: e.target.value })} />
-          <select className="input" value={f.type} onChange={(e) => update(i, { type: e.target.value })}>
-            <option value="string">string</option>
-            <option value="int">int</option>
-            <option value="bool">bool</option>
-            <option value="object">object</option>
-            <option value="array">array</option>
-            <option value="any">any</option>
-          </select>
-          <label className="meta" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <input type="checkbox" checked={!!f.required} onChange={(e) => update(i, { required: e.target.checked })} />
-            <span>req</span>
-          </label>
-          {side === "in" ? (
-            <input
-              className="input"
-              value={(f.from ?? "") + (f.field ? "." + f.field : "")}
-              onChange={(e) => {
-                const v = e.target.value;
-                const dot = v.indexOf(".");
-                if (dot < 0) update(i, { from: v, field: undefined });
-                else update(i, { from: v.slice(0, dot), field: v.slice(dot + 1) });
-              }}
-              placeholder="label[.field]"
-            />
-          ) : (
-            <input
-              className="input"
-              value={typeof f.default === "string" ? f.default : f.default == null ? "" : JSON.stringify(f.default)}
-              onChange={(e) => update(i, { default: e.target.value === "" ? undefined : e.target.value })}
-              placeholder="(optional default)"
-            />
-          )}
-          <button className="btn" onClick={() => remove(i)} title="Remove" style={{ color: "var(--error)", padding: "4px 8px" }}>×</button>
+  const handler = useMemo(
+    () => handlers.find((h) => h.name === logicName) ?? null,
+    [handlers, logicName],
+  );
+
+  if (!logicName) {
+    return (
+      <DetailCard title="Inputs / outputs" style={{ marginBottom: 16 }}>
+        <div className="meta">
+          This task has no <code>logic</code> set, so it has no I/O contract.
+          Set a logic above to bind one.
         </div>
-      ))}
-      <button className="btn" onClick={add} style={{ marginTop: 6 }}>+ Add field</button>
+      </DetailCard>
+    );
+  }
+
+  if (loading) {
+    return (
+      <DetailCard title="Inputs / outputs" style={{ marginBottom: 16 }}>
+        <div className="meta">loading logic schema…</div>
+      </DetailCard>
+    );
+  }
+
+  if (!handler) {
+    return (
+      <DetailCard title="Inputs / outputs" style={{ marginBottom: 16 }}>
+        <div className="meta">
+          No registered logic handler named <code>{logicName}</code>. The
+          schema can't be shown until the logic is registered (the host
+          binary builds the manifest at startup).
+        </div>
+      </DetailCard>
+    );
+  }
+
+  return (
+    <DetailCard title="Inputs / outputs" style={{ marginBottom: 16 }}>
+      <div className="meta" style={{ marginBottom: 10 }}>
+        Read-only. I/O shape lives on the logic handler{" "}
+        <Link to={`/logic?name=${encodeURIComponent(handler.name)}`}>
+          <code>{handler.name}</code>
+        </Link>
+        , not the task. Edit the Go logic to change it.
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <SchemaPanel
+          title="Inputs"
+          schema={handler.input_schema}
+          emptyText="No inputs declared"
+          tone="in"
+          skippable={handler.skippable_inputs ?? []}
+        />
+        <SchemaPanel
+          title="Outputs"
+          schema={handler.output_schema}
+          emptyText="No outputs declared"
+          tone="out"
+        />
+      </div>
     </DetailCard>
   );
 }
@@ -429,12 +476,4 @@ function writeStringOrDelete(target: Record<string, unknown>, key: string, value
 function writeNumberOrDelete(target: Record<string, unknown>, key: string, value: number | "") {
   if (value === "" || value === 0) delete target[key];
   else target[key] = value;
-}
-function stripEmptyFields(f: FieldDef): FieldDef {
-  const out: FieldDef = { name: f.name, type: f.type };
-  if (f.required) out.required = true;
-  if (f.default !== undefined && f.default !== "") out.default = f.default;
-  if (f.from) out.from = f.from;
-  if (f.field) out.field = f.field;
-  return out;
 }

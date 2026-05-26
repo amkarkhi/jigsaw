@@ -26,7 +26,13 @@ type Endpoint struct {
 	Method      string         `yaml:"method" json:"method"`
 	Description string         `yaml:"description" json:"description,omitempty"`
 	Flows       []FlowMapping  `yaml:"flows" json:"flows"`
-	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// RequestParams declares the scope keys that the HTTP layer will seed into
+	// the execution context before the flow runs (path / query / header / body
+	// parameters). The flow validator uses this list to pre-populate its
+	// simulated scope so first-task inputs read from these keys validate
+	// cleanly. Names should match the scope keys produced by the gateway.
+	RequestParams []string       `yaml:"request_params,omitempty" json:"request_params,omitempty"`
+	Metadata      map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 // FlowMapping maps sub parameter to a specific flow
@@ -52,14 +58,65 @@ type TaskRef struct {
 	Overrides []TaskOverride `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 	Parallel  *ParallelBlock `yaml:"parallel,omitempty" json:"parallel,omitempty"`
 	Bind      *Bind          `yaml:"bind,omitempty" json:"bind,omitempty"`
+	// Params overrides individual keys of the referenced task's Params for this
+	// flow only. Shallow merge: ref keys win, unspecified keys fall through to
+	// the task definition.
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+}
+
+// WrapperRef points at another task that wraps the execution of the task
+// declaring it. The wrapper's logic receives ctx.Nested (pointing to the
+// wrapped task) and is expected to dispatch the wrapped task via
+// ctx.Engine.InvokeTask. Params are shallow-merged on top of the wrapper
+// task's own params for this binding.
+type WrapperRef struct {
+	Task   string         `yaml:"task" json:"task"`
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
 // Bind carries the input and output scope-wiring for a TaskRef.
 // In maps handler-input-name → scope-key-to-read-from.
 // Out maps handler-output-name → scope-key-to-publish-to.
+// Skip lists handler-input-names that should be omitted from the input map
+// for this task ref (the logic sees the Go zero value). A field can only be
+// skipped if the logic's input struct marks it `jig:"skippable"`.
 type Bind struct {
-	In  map[string]string `yaml:"in,omitempty" json:"in,omitempty"`
-	Out map[string]string `yaml:"out,omitempty" json:"out,omitempty"`
+	In   map[string]string `yaml:"in,omitempty" json:"in,omitempty"`
+	Out  map[string]string `yaml:"out,omitempty" json:"out,omitempty"`
+	Skip []string          `yaml:"skip,omitempty" json:"skip,omitempty"`
+}
+
+// SkipList returns the Skip slice, or nil when b is nil.
+func (b *Bind) SkipList() []string {
+	if b == nil {
+		return nil
+	}
+	return b.Skip
+}
+
+// SkipSet returns the Skip list as a lookup set, or nil when b is nil.
+func (b *Bind) SkipSet() map[string]struct{} {
+	if b == nil || len(b.Skip) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(b.Skip))
+	for _, name := range b.Skip {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+// IsSkipped reports whether field is listed in b.Skip.
+func (b *Bind) IsSkipped(field string) bool {
+	if b == nil {
+		return false
+	}
+	for _, name := range b.Skip {
+		if name == field {
+			return true
+		}
+	}
+	return false
 }
 
 // InMap returns the In map, or nil when b is nil.
@@ -147,6 +204,13 @@ type Task struct {
 	Timeout     int            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Retry       int            `yaml:"retry,omitempty" json:"retry,omitempty"`
 	Metadata    map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	// Wrapper declares a parent/wrapper task that wraps this task's execution.
+	// The wrapper task shares this task's I/O shape and intercepts execution
+	// (e.g., for caching, logging, metrics). The wrapper's logic receives the
+	// wrapped task name via ctx.Nested so it can invoke it via
+	// ctx.Engine.InvokeTask. Cycles between wrappers are rejected at config-
+	// validation time.
+	Wrapper *WrapperRef `yaml:"wrapper,omitempty" json:"wrapper,omitempty"`
 }
 
 // Fallback defines error handling strategy
@@ -201,6 +265,18 @@ type ExecutionContext struct {
 	Providers   ProviderRegistry  // Provider registry interface
 	Logger      zerolog.Logger    // Structured logger (zerolog, by value)
 	Context     context.Context   // Go context for cancellation
+
+	// Engine exposes the running engine to logic handlers so they can dispatch
+	// other registered logics by name (e.g. cache wrappers). Populated by
+	// Engine.ExecuteFlow; nil for contexts not produced by a real execution.
+	Engine LogicDispatcher
+
+	// Nested points at the task being wrapped by the currently executing
+	// wrapper logic. Set by the executor before invoking a wrapper, restored
+	// on return. Wrappers dispatch the inner via ctx.Engine.InvokeTask(
+	// ctx.Nested.Task, ...). nil when no wrapper is active. (Uses the same
+	// shape as Task.Wrapper for convenience.)
+	Nested *WrapperRef
 
 	// BranchPath identifies the parallel scope this context is executing inside.
 	// Empty at the top level. Populated by context.Fork.
@@ -322,6 +398,22 @@ type FlowRouter interface {
 // Validator validates configuration.
 type Validator interface {
 	ValidateConfig(config *Config) error
+}
+
+// LogicDispatcher invokes a registered logic handler or task by name from
+// inside another handler. Two flavors:
+//
+//   - Invoke: dispatches a logic by name; the caller supplies params and
+//     provider explicitly. Bind wiring does not apply.
+//   - InvokeTask: dispatches a *task* by name; the engine resolves the task
+//     (inheritance, params defaults, provider) and runs it through the same
+//     execution path a flow ref would, minus bind (caller passes/receives raw
+//     maps). paramOverrides are shallow-merged on top of the task's params.
+//
+// Implemented by *engine.Engine.
+type LogicDispatcher interface {
+	Invoke(ctx *ExecutionContext, name string, inputs map[string]any, params map[string]any, provider ProviderInstance) (map[string]any, error)
+	InvokeTask(ctx *ExecutionContext, name string, inputs map[string]any, paramOverrides map[string]any) (map[string]any, error)
 }
 
 // =====================================================================

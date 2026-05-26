@@ -1,0 +1,13 @@
+flows:
+  - name: nested_search
+    description: "Plain `search` ref — the task's own `wrapper:` adds caching transparently."
+    version: "0.1.0"
+    tasks:
+      - name: search
+        bind:
+          in:
+            query: query
+          out:
+            results: search_results
+    metadata:
+      author: "jigsaw-team"

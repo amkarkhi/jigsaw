@@ -12,6 +12,7 @@ A **Task** is the smallest unit of execution in Jigsaw. Each task:
 - Can use one or more **providers** to perform work
 - Contains **fallback strategies** for error handling
 - Supports **inheritance** from other tasks
+- Can have **wrappers** for cross-cutting concerns (v2.0+)
 - Executes business logic (API calls, DB queries, transformations, etc.)
 
 ### 2. Flow
@@ -124,6 +125,11 @@ A **Context** object that:
 ┌─────────────────────────────────────────┐
 │            Task Execution                │
 │                                          │
+│  0. Wrapper Check (NEW!)                 │
+│     ├─ Check if task has wrapper         │
+│     ├─ If yes: execute wrapper instead   │
+│     └─ Wrapper invokes actual task       │
+│                                          │
 │  1. Pre-execution                        │
 │     ├─ Validate inputs                   │
 │     └─ Get required providers            │
@@ -181,6 +187,80 @@ fallback:
   strategy: switch_provider
   providers: ["search_engine", "search_fallback", "database"]
 ```
+
+## Task Wrappers (v2.0+)
+
+Wrappers allow you to add cross-cutting concerns (caching, metrics, logging, rate limiting) to tasks without cluttering flow definitions.
+
+### How Wrappers Work
+
+1. **Define wrapper once** - Generic wrapper task (e.g., `cache`)
+2. **Apply to any task** - Add `wrapper:` field to task definition
+3. **Automatic execution** - Wrapper intercepts task execution
+4. **Transparent I/O** - Wrapper inherits task's input/output schema
+
+### Wrapper Execution Flow
+
+```
+Flow references task "search"
+        ↓
+Task "search" has wrapper: cache
+        ↓
+Execute wrapper task "cache"
+        ↓
+Wrapper checks ctx.Nested (points to "search")
+        ↓
+Wrapper invokes actual "search" task
+        ↓
+Wrapper processes result (e.g., caches it)
+        ↓
+Returns result to flow
+```
+
+### Example Configuration
+
+```yaml
+# Define wrapper task
+tasks:
+  - name: cache
+    logic: cache_wrapper
+
+# Apply wrapper to any task
+tasks:
+  - name: search
+    logic: search
+    wrapper:
+      task: cache
+      params:
+        keys: [query]
+        ttl: 120s
+
+# Use in flows (wrapper is automatic)
+flows:
+  - name: search_flow
+    tasks:
+      - name: search    # Caching happens automatically
+```
+
+### Benefits
+
+- ✅ **Separation of concerns** - Business logic separate from infrastructure
+- ✅ **Reusability** - Same wrapper works with any task
+- ✅ **Maintainability** - Change caching strategy in one place
+- ✅ **Clean flows** - No wrapper boilerplate in flow definitions
+- ✅ **Composability** - Can chain multiple wrappers (future)
+
+### Common Use Cases
+
+1. **Caching** - Automatically cache expensive operations
+2. **Metrics** - Track execution time and success rates
+3. **Rate Limiting** - Throttle API calls
+4. **Retry Logic** - Add exponential backoff
+5. **Circuit Breaking** - Prevent cascading failures
+6. **Logging** - Enhanced structured logging
+7. **Validation** - Input/output validation layers
+
+👉 See [WRAPPER_PATTERN.md](WRAPPER_PATTERN.md) for complete guide
 
 ## Configuration Inheritance
 

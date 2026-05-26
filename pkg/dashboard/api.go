@@ -44,6 +44,8 @@ func (d *Dashboard) routes() {
 	d.mux.HandleFunc("/api/users", d.handleUsers)
 	d.mux.HandleFunc("/api/users/", d.handleUser)
 	d.mux.HandleFunc("/api/playground/run", d.handlePlaygroundRun)
+	d.mux.HandleFunc("/api/playground/task", d.handlePlaygroundTask)
+	d.mux.HandleFunc("/api/playground/logic", d.handlePlaygroundLogic)
 
 	// Everything else falls through to the static SPA. Routing inside the SPA
 	// is handled client-side.
@@ -155,7 +157,7 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(cfg.Tasks))
 	for name, task := range cfg.Tasks {
 		_, implemented := known[task.Logic]
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"name":              name,
 			"description":       task.Description,
 			"logic":             task.Logic,
@@ -163,7 +165,14 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 			"provider":          task.Provider,
 			"params":            len(task.Params),
 			"inherits":          task.Inherits,
-		})
+		}
+		// Task-level wrapper: surface the wrapper task name so the UI can
+		// render this task as wrapped by another (dashed container with the
+		// wrapper's name on top, the wrapped task underneath).
+		if task.Wrapper != nil && task.Wrapper.Task != "" {
+			entry["wrapped_by"] = task.Wrapper.Task
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, out)
 }
@@ -227,11 +236,12 @@ func (d *Dashboard) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			flows = append(flows, map[string]any{"sub": m.Sub, "flow": m.FlowName})
 		}
 		out = append(out, map[string]any{
-			"name":        name,
-			"path":        ep.Path,
-			"method":      ep.Method,
-			"description": ep.Description,
-			"flows":       flows,
+			"name":           name,
+			"path":           ep.Path,
+			"method":         ep.Method,
+			"description":    ep.Description,
+			"flows":          flows,
+			"request_params": ep.RequestParams,
 		})
 	}
 	writeJSON(w, out)
@@ -261,13 +271,14 @@ func (d *Dashboard) handleLogic(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(specs))
 	for _, s := range specs {
 		out = append(out, map[string]any{
-			"name":          s.Name,
-			"description":   s.Description,
-			"version":       s.Version,
-			"input_schema":  s.InputSchema,
-			"output_schema": s.OutputSchema,
-			"params_schema": s.ParamsSchema,
-			"used_by":       usage[s.Name],
+			"name":             s.Name,
+			"description":      s.Description,
+			"version":          s.Version,
+			"input_schema":     s.InputSchema,
+			"output_schema":    s.OutputSchema,
+			"params_schema":    s.ParamsSchema,
+			"skippable_inputs": s.SkippableInputs,
+			"used_by":          usage[s.Name],
 		})
 	}
 	writeJSON(w, map[string]any{
@@ -345,12 +356,13 @@ func (d *Dashboard) loadLogicSpecs() []configlang.LogicSpec {
 	specs := make([]configlang.LogicSpec, len(m.Logic))
 	for i, l := range m.Logic {
 		specs[i] = configlang.LogicSpec{
-			Name:         l.Name,
-			Description:  l.Description,
-			Version:      l.Version,
-			InputSchema:  l.InputSchema,
-			OutputSchema: l.OutputSchema,
-			ParamsSchema: l.ParamsSchema,
+			Name:            l.Name,
+			Description:     l.Description,
+			Version:         l.Version,
+			InputSchema:     l.InputSchema,
+			OutputSchema:    l.OutputSchema,
+			ParamsSchema:    l.ParamsSchema,
+			SkippableInputs: l.SkippableInputs,
 		}
 	}
 	return specs

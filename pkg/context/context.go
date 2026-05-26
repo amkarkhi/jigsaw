@@ -34,6 +34,8 @@ func Fork(parent *types.ExecutionContext, branchLabel string, goCtx context.Cont
 		Providers:   parent.Providers,
 		Logger:      branchLogger,
 		Context:     goCtx,
+		Engine:      parent.Engine,
+		Nested:      parent.Nested,
 		BranchPath:  branchPath,
 		Scope:       make(map[string]types.ScopedVar),
 		Metadata:    cloneMap(parent.Metadata),

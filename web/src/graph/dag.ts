@@ -278,8 +278,8 @@ export function autoLayout(canvas: Canvas) {
     buckets.get(d)!.push(id);
   }
 
-  const ROW = 110;
-  const COL = 220;
+  const ROW = 170;
+  const COL = 320;
   const pos = new Map<string, { x: number; y: number }>();
   const depths = [...buckets.keys()].sort((a, b) => a - b);
 

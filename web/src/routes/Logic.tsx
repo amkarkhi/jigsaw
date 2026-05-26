@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, JSONSchema, LogicHandler } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
+import { SchemaPanel, hasFields, expandTopLevelFields } from "../components/SchemaPanel";
 
 export default function Logic() {
   const { data, error, loading } = useAsync(() => api.logic(), []);
@@ -103,6 +105,8 @@ function filterHandlers(handlers: LogicHandler[], q: string): LogicHandler[] {
     if (schemaMatches(h.input_schema, needle)) return true;
     if (schemaMatches(h.output_schema, needle)) return true;
     if (schemaMatches(h.params_schema, needle)) return true;
+    if (h.skippable_inputs && h.skippable_inputs.some((f) => f.toLowerCase().includes(needle))) return true;
+    if (needle === "skippable" && (h.skippable_inputs?.length ?? 0) > 0) return true;
     return false;
   });
 }
@@ -178,6 +182,19 @@ function HandlerListItem({
               used by <span style={{ color: "var(--text)" }}>{h.used_by.length}</span>
             </span>
           )}
+          {h.skippable_inputs && h.skippable_inputs.length > 0 && (
+            <span
+              title='Inputs marked `jig:"skippable"` — flows may omit them via bind.skip'
+              style={{
+                border: "1px dashed var(--border)",
+                borderRadius: 3,
+                padding: "0 5px",
+                fontSize: 10,
+              }}
+            >
+              {h.skippable_inputs.length} skippable
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -185,6 +202,7 @@ function HandlerListItem({
 }
 
 function HandlerDetail({ h, onClose }: { h: LogicHandler; onClose: () => void }) {
+  const navigate = useNavigate();
   return (
     <div
       style={{
@@ -203,6 +221,13 @@ function HandlerDetail({ h, onClose }: { h: LogicHandler; onClose: () => void })
         <div className="name" style={{ fontSize: 16 }}>{h.name}</div>
         {h.version && <span className="badge">v{h.version}</span>}
         <span style={{ flex: 1 }} />
+        <button
+          className="btn"
+          onClick={() => navigate(`/playground?logic=${encodeURIComponent(h.name)}`)}
+          title="Open this logic in the playground"
+        >
+          Test in playground
+        </button>
         <button className="btn" onClick={onClose} title="Close detail">×</button>
       </div>
       {h.description && (
@@ -216,7 +241,13 @@ function HandlerDetail({ h, onClose }: { h: LogicHandler; onClose: () => void })
           gap: 12,
         }}
       >
-        <SchemaPanel title="Inputs" schema={h.input_schema} emptyText="No inputs declared" tone="in" />
+        <SchemaPanel
+          title="Inputs"
+          schema={h.input_schema}
+          emptyText="No inputs declared"
+          tone="in"
+          skippable={h.skippable_inputs ?? []}
+        />
         <SchemaPanel title="Outputs" schema={h.output_schema} emptyText="No outputs declared" tone="out" />
       </div>
 
@@ -238,137 +269,4 @@ function HandlerDetail({ h, onClose }: { h: LogicHandler; onClose: () => void })
       )}
     </div>
   );
-}
-
-function SchemaPanel({
-  title,
-  schema,
-  emptyText,
-  tone,
-}: {
-  title: string;
-  schema: JSONSchema | null | undefined;
-  emptyText?: string;
-  tone: "in" | "out" | "param";
-}) {
-  const fields = expandTopLevelFields(schema);
-  const accent =
-    tone === "in" ? "#4a9eff" : tone === "out" ? "#7ab87a" : "var(--text-dim)";
-  return (
-    <div
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 4,
-        padding: "10px 12px",
-        background: "var(--panel-2)",
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 600,
-          color: "var(--text)",
-          marginBottom: 8,
-          fontSize: 12,
-          textTransform: "uppercase",
-          letterSpacing: 0.5,
-          borderLeft: `3px solid ${accent}`,
-          paddingLeft: 6,
-        }}
-      >
-        {title}
-        <span style={{ marginLeft: 6, color: "var(--text-dim)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
-          ({fields.length})
-        </span>
-      </div>
-      {fields.length === 0 ? (
-        <div className="meta">{emptyText ?? "—"}</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {fields.map((f) => (
-            <FieldRowView key={f.name} field={f} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FieldRowView({ field }: { field: FieldRow }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "auto 1fr",
-        gap: "2px 10px",
-        fontSize: 12,
-      }}
-    >
-      <div style={{ fontFamily: "var(--font-mono)", color: "var(--text)" }}>
-        {field.name}
-        {field.required && <span style={{ color: "var(--danger, #c84)" }}> *</span>}
-      </div>
-      <div style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-        <code>{field.type}</code>
-      </div>
-      {field.description && (
-        <div style={{ gridColumn: "1 / -1", color: "var(--text-dim)", fontSize: 11 }}>
-          {field.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface FieldRow {
-  name: string;
-  type: string;
-  required: boolean;
-  description?: string;
-}
-
-function expandTopLevelFields(schema: JSONSchema | null | undefined): FieldRow[] {
-  if (!schema) return [];
-  const root = resolveRef(schema, schema);
-  const props = root.properties || {};
-  const required = new Set(root.required || []);
-  return Object.entries(props).map(([name, sub]) => {
-    const resolved = resolveRef(sub, schema);
-    return {
-      name,
-      type: jsonSchemaTypeLabel(resolved),
-      required: required.has(name),
-      description: resolved.description,
-    };
-  });
-}
-
-function hasFields(schema: JSONSchema | null | undefined): boolean {
-  if (!schema) return false;
-  const root = resolveRef(schema, schema);
-  return !!root.properties && Object.keys(root.properties).length > 0;
-}
-
-function resolveRef(node: JSONSchema, root: JSONSchema): JSONSchema {
-  if (!node.$ref) return node;
-  const path = node.$ref.replace(/^#\//, "").split("/");
-  let cur: any = root;
-  for (const p of path) {
-    if (cur == null) return node;
-    cur = cur[p];
-  }
-  return cur || node;
-}
-
-function jsonSchemaTypeLabel(s: JSONSchema): string {
-  if (!s) return "any";
-  if (Array.isArray(s.type)) return s.type.join(" | ");
-  if (s.type === "array") {
-    const item = s.items ? jsonSchemaTypeLabel(s.items) : "any";
-    return `${item}[]`;
-  }
-  if (s.type === "object" && s.properties) {
-    const names = Object.keys(s.properties);
-    return names.length > 0 ? `{ ${names.join(", ")} }` : "object";
-  }
-  return (s.type as string) || (s.enum ? "enum" : "any");
 }

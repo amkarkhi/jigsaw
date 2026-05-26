@@ -28,3 +28,34 @@ tasks:
     fallback:
       strategy: abort
       message: "Failed to build response"
+
+  # `cache` is the generic wrapper task. It is referenced by another task's
+  # top-level `wrapper:` field. The wrapper logic reads ctx.Nested.Task to
+  # know which inner task to dispatch via Engine.InvokeTask, builds a key
+  # from the listed input fields, and stores the result.
+  - name: cache
+    description: "Generic cache wrapper. Reference via `wrapper: { task: cache }`."
+    version: "0.1.0"
+    logic: cache_wrapper
+    provider: cache
+    params:
+      ttl: 60s
+    timeout: 1500
+    fallback:
+      strategy: abort
+      message: "cache wrapper failed"
+
+  # `search` is the real task. `wrapper:` declares that every execution of
+  # `search` goes through `cache` first. Params on the wrapper binding are
+  # forwarded to the wrapper logic — here, the list of input fields to fold
+  # into the cache key.
+  - name: search
+    description: "Mock search task — returns synthetic hits for a query."
+    version: "0.1.0"
+    logic: search
+    timeout: 1000
+    wrapper:
+      task: cache
+      params:
+        keys: [query]
+        ttl: 120s

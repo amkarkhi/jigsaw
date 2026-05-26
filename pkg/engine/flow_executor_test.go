@@ -79,6 +79,7 @@ func (h *rawFuncHandler) Meta() LogicMeta                  { return LogicMeta{Na
 func (h *rawFuncHandler) InputSchema() *jsonschema.Schema  { return nil }
 func (h *rawFuncHandler) OutputSchema() *jsonschema.Schema { return nil }
 func (h *rawFuncHandler) ParamsSchema() *jsonschema.Schema { return nil }
+func (h *rawFuncHandler) SkippableInputs() []string        { return nil }
 func (h *rawFuncHandler) Execute(ctx *types.ExecutionContext, inputs, params map[string]any, p types.ProviderInstance) (map[string]any, error) {
 	return h.fn(ctx, inputs, params, p)
 }

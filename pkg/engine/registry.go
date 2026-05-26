@@ -3,6 +3,8 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,14 +34,15 @@ type ProviderLogic[I, O, P any] interface {
 // LogicHandlerInfo contains metadata about a registered logic handler. It is
 // JSON-encodable so /api/_logic keeps working.
 type LogicHandlerInfo struct {
-	Name         string             `json:"name"`
-	Description  string             `json:"description,omitempty"`
-	Version      string             `json:"version,omitempty"`
-	RegisteredAt time.Time          `json:"registered_at"`
-	UsedBy       []string           `json:"used_by,omitempty"`
-	InputSchema  *jsonschema.Schema `json:"input_schema,omitempty"`
-	OutputSchema *jsonschema.Schema `json:"output_schema,omitempty"`
-	ParamsSchema *jsonschema.Schema `json:"params_schema,omitempty"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	Version         string             `json:"version,omitempty"`
+	RegisteredAt    time.Time          `json:"registered_at"`
+	UsedBy          []string           `json:"used_by,omitempty"`
+	InputSchema     *jsonschema.Schema `json:"input_schema,omitempty"`
+	OutputSchema    *jsonschema.Schema `json:"output_schema,omitempty"`
+	ParamsSchema    *jsonschema.Schema `json:"params_schema,omitempty"`
+	SkippableInputs []string           `json:"skippable_inputs,omitempty"`
 }
 
 // logicHandler is the interface every internal handler wrapper must satisfy.
@@ -48,6 +51,7 @@ type logicHandler interface {
 	InputSchema() *jsonschema.Schema
 	OutputSchema() *jsonschema.Schema
 	ParamsSchema() *jsonschema.Schema
+	SkippableInputs() []string
 	Execute(ctx *types.ExecutionContext, inputs map[string]any, params map[string]any,
 		provider types.ProviderInstance) (map[string]any, error)
 }
@@ -80,13 +84,14 @@ func (r *logicRegistry) register(handler logicHandler) error {
 
 	r.handlers[name] = handler
 	r.metadata[name] = &LogicHandlerInfo{
-		Name:         name,
-		Description:  meta.Description,
-		Version:      meta.Version,
-		RegisteredAt: time.Now(),
-		InputSchema:  handler.InputSchema(),
-		OutputSchema: handler.OutputSchema(),
-		ParamsSchema: handler.ParamsSchema(),
+		Name:            name,
+		Description:     meta.Description,
+		Version:         meta.Version,
+		RegisteredAt:    time.Now(),
+		InputSchema:     handler.InputSchema(),
+		OutputSchema:    handler.OutputSchema(),
+		ParamsSchema:    handler.ParamsSchema(),
+		SkippableInputs: handler.SkippableInputs(),
 	}
 	return nil
 }
@@ -188,17 +193,19 @@ type ValidationError struct {
 // =====================================================================
 
 type typedHandler[I, O, P any] struct {
-	meta         LogicMeta
-	inputSchema  *jsonschema.Schema
-	outputSchema *jsonschema.Schema
-	paramsSchema *jsonschema.Schema
-	logic        Logic[I, O, P]
+	meta            LogicMeta
+	inputSchema     *jsonschema.Schema
+	outputSchema    *jsonschema.Schema
+	paramsSchema    *jsonschema.Schema
+	skippableInputs []string
+	logic           Logic[I, O, P]
 }
 
 func (h *typedHandler[I, O, P]) Meta() LogicMeta                  { return h.meta }
 func (h *typedHandler[I, O, P]) InputSchema() *jsonschema.Schema  { return h.inputSchema }
 func (h *typedHandler[I, O, P]) OutputSchema() *jsonschema.Schema { return h.outputSchema }
 func (h *typedHandler[I, O, P]) ParamsSchema() *jsonschema.Schema { return h.paramsSchema }
+func (h *typedHandler[I, O, P]) SkippableInputs() []string        { return h.skippableInputs }
 
 func (h *typedHandler[I, O, P]) Execute(
 	ctx *types.ExecutionContext,
@@ -229,17 +236,19 @@ func (h *typedHandler[I, O, P]) Execute(
 }
 
 type providerTypedHandler[I, O, P any] struct {
-	meta         LogicMeta
-	inputSchema  *jsonschema.Schema
-	outputSchema *jsonschema.Schema
-	paramsSchema *jsonschema.Schema
-	logic        ProviderLogic[I, O, P]
+	meta            LogicMeta
+	inputSchema     *jsonschema.Schema
+	outputSchema    *jsonschema.Schema
+	paramsSchema    *jsonschema.Schema
+	skippableInputs []string
+	logic           ProviderLogic[I, O, P]
 }
 
 func (h *providerTypedHandler[I, O, P]) Meta() LogicMeta                  { return h.meta }
 func (h *providerTypedHandler[I, O, P]) InputSchema() *jsonschema.Schema  { return h.inputSchema }
 func (h *providerTypedHandler[I, O, P]) OutputSchema() *jsonschema.Schema { return h.outputSchema }
 func (h *providerTypedHandler[I, O, P]) ParamsSchema() *jsonschema.Schema { return h.paramsSchema }
+func (h *providerTypedHandler[I, O, P]) SkippableInputs() []string        { return h.skippableInputs }
 
 func (h *providerTypedHandler[I, O, P]) Execute(
 	ctx *types.ExecutionContext,
@@ -281,11 +290,12 @@ func Register[I, O, P any](eng *Engine, l Logic[I, O, P]) error {
 		return fmt.Errorf("Register: LogicMeta.Name must not be empty")
 	}
 	h := &typedHandler[I, O, P]{
-		meta:         meta,
-		inputSchema:  reflectSchema[I](),
-		outputSchema: reflectSchema[O](),
-		paramsSchema: reflectSchema[P](),
-		logic:        l,
+		meta:            meta,
+		inputSchema:     reflectSchema[I](),
+		outputSchema:    reflectSchema[O](),
+		paramsSchema:    reflectSchema[P](),
+		skippableInputs: reflectSkippable[I](),
+		logic:           l,
 	}
 	return eng.logicRegistry.register(h)
 }
@@ -304,11 +314,12 @@ func RegisterWithProvider[I, O, P any](eng *Engine, l ProviderLogic[I, O, P]) er
 		return fmt.Errorf("RegisterWithProvider: LogicMeta.Name must not be empty")
 	}
 	h := &providerTypedHandler[I, O, P]{
-		meta:         meta,
-		inputSchema:  reflectSchema[I](),
-		outputSchema: reflectSchema[O](),
-		paramsSchema: reflectSchema[P](),
-		logic:        l,
+		meta:            meta,
+		inputSchema:     reflectSchema[I](),
+		outputSchema:    reflectSchema[O](),
+		paramsSchema:    reflectSchema[P](),
+		skippableInputs: reflectSkippable[I](),
+		logic:           l,
 	}
 	return eng.logicRegistry.register(h)
 }
@@ -340,4 +351,66 @@ func reflectSchema[T any]() *jsonschema.Schema {
 		DoNotReference: true,
 	}
 	return r.Reflect(zero)
+}
+
+// reflectSkippable returns the JSON-name of every top-level field on T whose
+// struct tag includes `jig:"skippable"`. The tag may also list extra tokens
+// (e.g. `jig:"skippable,foo"`); tokens are comma-separated.
+//
+// Only the input struct's direct fields are considered (no recursion into
+// embedded sub-structs).
+func reflectSkippable[T any]() []string {
+	var zero T
+	rt := reflect.TypeOf(zero)
+	if rt == nil {
+		return nil
+	}
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	if rt.Kind() != reflect.Struct {
+		return nil
+	}
+	var out []string
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if !hasJigToken(f.Tag.Get("jig"), "skippable") {
+			continue
+		}
+		name := jsonFieldName(f)
+		if name == "" || name == "-" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func hasJigToken(tag, token string) bool {
+	if tag == "" {
+		return false
+	}
+	for _, part := range strings.Split(tag, ",") {
+		if strings.TrimSpace(part) == token {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonFieldName returns the field's JSON name (from the `json` tag) or the
+// Go field name when no tag is set.
+func jsonFieldName(f reflect.StructField) string {
+	tag := f.Tag.Get("json")
+	if tag == "" {
+		return f.Name
+	}
+	name, _, _ := strings.Cut(tag, ",")
+	if name == "" {
+		return f.Name
+	}
+	return name
 }

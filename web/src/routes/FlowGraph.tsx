@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useParams, Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactFlow, {
   Background,
   Connection,
@@ -67,6 +67,11 @@ interface NodeData {
   // Full chain of enclosing parallel-branch labels, outermost first.
   // Rendered as a single dotted path chip on the node.
   branchPath?: string[];
+  // Name of the wrapper task that intercepts this task's execution
+  // (Task.Wrapper.Task in YAML, surfaced via TaskSummary.wrapped_by).
+  // When set, the node renders inside a dashed container labelled with
+  // the wrapper. Read-only signal — editing happens in the side panel.
+  wrappedBy?: string;
   selected: boolean;
   isStart: boolean;
   isEnd: boolean;
@@ -88,6 +93,7 @@ interface CtxMenu {
 
 function FlowGraphInner() {
   const { name } = useParams();
+  const navigate = useNavigate();
   const [flow, setFlow] = useState<Flow | null>(null);
   const [filePath, setFilePath] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -302,22 +308,36 @@ function FlowGraphInner() {
     return map;
   }, [validation]);
 
+  // Look up wrapper task per task name from the palette so the renderer can
+  // draw a dashed container around tasks that have a task-level `wrapper:`.
+  const wrappedByTaskName = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const t of palette) {
+      if (t.wrapped_by) map[t.name] = t.wrapped_by;
+    }
+    return map;
+  }, [palette]);
+
   // Reapply visual flags to nodes/edges every render.
   const styledNodes = useMemo(
     () =>
-      nodes.map((n) => ({
-        ...n,
-        data: {
-          ...(n.data as NodeData),
-          selected: n.id === selectedNode,
-          isStart: startEnd.starts.has(n.id),
-          isEnd: startEnd.ends.has(n.id),
-          hasError: validation.problemNodes.has(n.id),
-          hasWarning: validation.warnNodes.has(n.id) && !validation.problemNodes.has(n.id),
-          issues: issuesByNode[n.id],
-        },
-      })),
-    [nodes, selectedNode, startEnd, validation, issuesByNode],
+      nodes.map((n) => {
+        const d = n.data as NodeData;
+        return {
+          ...n,
+          data: {
+            ...d,
+            selected: n.id === selectedNode,
+            isStart: startEnd.starts.has(n.id),
+            isEnd: startEnd.ends.has(n.id),
+            hasError: validation.problemNodes.has(n.id),
+            hasWarning: validation.warnNodes.has(n.id) && !validation.problemNodes.has(n.id),
+            issues: issuesByNode[n.id],
+            wrappedBy: wrappedByTaskName[d.taskName],
+          },
+        };
+      }),
+    [nodes, selectedNode, startEnd, validation, issuesByNode, wrappedByTaskName],
   );
   const styledEdges = useMemo(
     () =>
@@ -915,6 +935,28 @@ function FlowGraphInner() {
           />
           <button onClick={() => setYamlOpen((v) => !v)} className={`btn ${yamlOpen ? "btn-primary" : ""}`}>
             {yamlOpen ? "Hide YAML" : "Show YAML"}
+          </button>
+          <button
+            onClick={() => {
+              const text = currentDocYaml();
+              if (!text) {
+                setDiags([{ Severity: "error", File: "", Message: "graph can't be compiled — fix errors before testing" }]);
+                return;
+              }
+              const key = Math.random().toString(36).slice(2, 10);
+              try {
+                sessionStorage.setItem(`playground:custom:${key}`, text);
+              } catch {
+                setFlash("Could not stash flow for playground (sessionStorage unavailable)");
+                return;
+              }
+              navigate(`/playground?customKey=${key}`);
+            }}
+            className="btn"
+            disabled={validation.hasErrors}
+            title={validation.hasErrors ? "Fix errors before testing" : "Test this flow in the playground (uses current unsaved state)"}
+          >
+            Test in playground
           </button>
           <button
             onClick={() => setDraftSaveOpen(true)}
@@ -2045,6 +2087,7 @@ function BindEditor({
     name: string;
     input_schema: { name: string; type: string }[] | null;
     output_schema: { name: string; type: string }[] | null;
+    skippable_inputs: string[];
   } | null>(null);
   const [loading, setLoading] = useState(false);
   // Fields in "custom text input" mode (user chose the Custom… option).
@@ -2070,6 +2113,7 @@ function BindEditor({
               name: handler.name,
               input_schema: flattenSchemaProps(handler.input_schema),
               output_schema: flattenSchemaProps(handler.output_schema),
+              skippable_inputs: handler.skippable_inputs ?? [],
             });
           }
           setLoading(false);
@@ -2101,9 +2145,12 @@ function BindEditor({
     } else {
       newIn[field] = scopeKey;
     }
+    // Picking a scope binding clears any "skip" entry for the same field.
+    const curSkip = (bindings?.skip ?? []).filter((s) => s !== field);
     onChange({
       in: Object.keys(newIn).length > 0 ? newIn : undefined,
       out: bindings?.out,
+      skip: curSkip.length > 0 ? curSkip : undefined,
     });
   }
 
@@ -2117,6 +2164,23 @@ function BindEditor({
     onChange({
       in: bindings?.in,
       out: Object.keys(newOut).length > 0 ? newOut : undefined,
+      skip: bindings?.skip,
+    });
+  }
+
+  // Toggle a field's "skip" state. When turning on, also clear any bind.in
+  // entry for the same field so the two modes don't coexist.
+  function updateSkip(field: string, on: boolean) {
+    const cur = new Set(bindings?.skip ?? []);
+    if (on) cur.add(field);
+    else cur.delete(field);
+    const newSkip = Array.from(cur);
+    const newIn = { ...(bindings?.in ?? {}) };
+    if (on) delete newIn[field];
+    onChange({
+      in: Object.keys(newIn).length > 0 ? newIn : undefined,
+      out: bindings?.out,
+      skip: newSkip.length > 0 ? newSkip : undefined,
     });
   }
 
@@ -2190,11 +2254,35 @@ function BindEditor({
             // inline if that name happens to match an incompatible scope var.
             const boundVar = currentValue ? scope.find((sv) => sv.name === currentValue) : undefined;
             const typeMismatch = !!boundVar && !typesCompatible(boundVar.type, field.type);
+            const isSkippable = (logicHandler.skippable_inputs ?? []).includes(field.name);
+            const isSkipped = (bindings?.skip ?? []).includes(field.name);
             return (
               <div key={field.name} style={{ marginBottom: 8 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, alignItems: "center" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isSkippable ? "100px 1fr auto" : "100px 1fr",
+                    gap: 8,
+                    alignItems: "center",
+                  }}
+                >
                   <label className="meta" title={`Type: ${field.type}`}>{field.name}</label>
-                  {custom ? (
+                  {isSkipped ? (
+                    <div
+                      className="meta"
+                      style={{
+                        fontSize: 12,
+                        fontStyle: "italic",
+                        color: "var(--text-dim)",
+                        padding: "4px 8px",
+                        border: "1px dashed var(--border)",
+                        borderRadius: 4,
+                      }}
+                      title="Field omitted from the input map — logic receives the Go zero value."
+                    >
+                      skipped (logic sees zero value)
+                    </div>
+                  ) : custom ? (
                     <div style={{ display: "flex", gap: 4 }}>
                       <input
                         className="input"
@@ -2240,8 +2328,22 @@ function BindEditor({
                       <option value="__custom__">Custom…</option>
                     </select>
                   )}
+                  {isSkippable && (
+                    <label
+                      className="meta"
+                      title="Omit this input — logic receives the Go zero value. Available because the logic marked the field jig:&quot;skippable&quot;."
+                      style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, cursor: "pointer" }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSkipped}
+                        onChange={(e) => updateSkip(field.name, e.target.checked)}
+                      />
+                      skip
+                    </label>
+                  )}
                 </div>
-                {typeMismatch && (
+                {!isSkipped && typeMismatch && (
                   <div style={{ color: "var(--error, #c84)", fontSize: 11, marginTop: 2, marginLeft: 108, lineHeight: 1.4 }}>
                     ⚠ "{currentValue}" in scope is type <code>{boundVar!.type}</code>, but this input expects <code>{field.type}</code>.
                     Pick a compatible variable or rename the upstream output.
@@ -2368,9 +2470,11 @@ function ContextMenu({
 // ---------------------------------------------------------------------------
 
 function TaskNode({ data }: NodeProps<NodeData>) {
+  const isWrapped = !!data.wrappedBy;
   const cls = [
     "gnode",
     "task",
+    isWrapped ? "wrapper" : "",
     data.selected ? "selected" : "",
     data.hasError ? "node-error" : "",
     data.hasWarning ? "node-warning" : "",
@@ -2384,6 +2488,11 @@ function TaskNode({ data }: NodeProps<NodeData>) {
         {data.branchPath && data.branchPath.length > 0 && (
           <span className="chip branch">⌥ {data.branchPath.join("·")}</span>
         )}
+        {isWrapped && (
+          <span className="chip wraps" title={`Wrapped by task "${data.wrappedBy}" — every execution goes through it first`}>
+            ↻ wrapped
+          </span>
+        )}
         {(data.hasError || data.hasWarning) && (
           <IssueChip severity={data.hasError ? "error" : "warning"} issues={data.issues ?? []} />
         )}
@@ -2392,6 +2501,15 @@ function TaskNode({ data }: NodeProps<NodeData>) {
       {data.label && (
         <div className="gnode-sub" style={{ color: "var(--accent)" }}>
           @{data.label}
+        </div>
+      )}
+      {isWrapped && (
+        <div
+          className="gnode-inner"
+          title="Wrapper task that intercepts this task's execution"
+        >
+          <span className="gnode-inner-arrow">↑</span>
+          <span className="gnode-inner-name mono">{data.wrappedBy}</span>
         </div>
       )}
       <Handle type="source" position={Position.Bottom} className="port port-bottom" />
@@ -2412,7 +2530,6 @@ function IssueChip({
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const cls = severity === "error" ? "chip err" : "chip warn";
-  const summary = issues.map((i) => i.message).join("\n");
   // Portal the popup to <body> with position:fixed so it escapes ReactFlow's
   // stacking context and never gets clipped by the canvas or node z-order.
   function show(e: React.MouseEvent) {
@@ -2424,7 +2541,6 @@ function IssueChip({
     <>
       <span
         className={cls}
-        title={summary || undefined}
         onMouseEnter={show}
         onMouseLeave={() => setOpen(false)}
         style={{ cursor: "help" }}
@@ -2655,7 +2771,12 @@ function applyBindings(
         if (q && q.length > 0) {
           const b = q.shift();
           // Only attach bind if it has actual data
-          if (b && (Object.keys(b.in ?? {}).length > 0 || Object.keys(b.out ?? {}).length > 0)) {
+          if (
+            b &&
+            (Object.keys(b.in ?? {}).length > 0 ||
+              Object.keys(b.out ?? {}).length > 0 ||
+              (b.skip?.length ?? 0) > 0)
+          ) {
             return { ...r, bind: b };
           }
         }

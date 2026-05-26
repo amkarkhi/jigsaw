@@ -44,12 +44,13 @@ type Manifest struct {
 // ParamsSchema are full JSON Schema objects reflected from the handler's typed
 // structs.
 type Logic struct {
-	Name         string             `json:"name"`
-	Description  string             `json:"description,omitempty"`
-	Version      string             `json:"version,omitempty"`
-	InputSchema  *jsonschema.Schema `json:"input_schema,omitempty"`
-	OutputSchema *jsonschema.Schema `json:"output_schema,omitempty"`
-	ParamsSchema *jsonschema.Schema `json:"params_schema,omitempty"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	Version         string             `json:"version,omitempty"`
+	InputSchema     *jsonschema.Schema `json:"input_schema,omitempty"`
+	OutputSchema    *jsonschema.Schema `json:"output_schema,omitempty"`
+	ParamsSchema    *jsonschema.Schema `json:"params_schema,omitempty"`
+	SkippableInputs []string           `json:"skippable_inputs,omitempty"`
 }
 
 // Provider describes one configured provider.
@@ -68,12 +69,13 @@ func BuildFromEngine(eng *engine.Engine, cfg *types.Config, binary string) *Mani
 
 	for _, info := range eng.ListLogicHandlersWithInfo() {
 		m.Logic = append(m.Logic, Logic{
-			Name:         info.Name,
-			Description:  info.Description,
-			Version:      info.Version,
-			InputSchema:  info.InputSchema,
-			OutputSchema: info.OutputSchema,
-			ParamsSchema: info.ParamsSchema,
+			Name:            info.Name,
+			Description:     info.Description,
+			Version:         info.Version,
+			InputSchema:     info.InputSchema,
+			OutputSchema:    info.OutputSchema,
+			ParamsSchema:    info.ParamsSchema,
+			SkippableInputs: info.SkippableInputs,
 		})
 	}
 	sort.Slice(m.Logic, func(i, j int) bool { return m.Logic[i].Name < m.Logic[j].Name })
