@@ -324,13 +324,47 @@ func writePlaygroundResp(w http.ResponseWriter, flowExec *types.FlowExecution, t
 	if runErr != nil {
 		resp["error"] = runErr.Error()
 	} else if flowExec != nil && flowExec.Context != nil {
-		snapshot := make(map[string]any, len(flowExec.Context.Scope))
-		for k, sv := range flowExec.Context.Scope {
-			snapshot[k] = sv.Value
-		}
-		resp["result"] = snapshot
+		resp["result"] = playgroundResultData(flowExec)
 	}
 	writeJSON(w, resp)
+}
+
+// playgroundResultData mirrors engine.ExecuteFlow's narrowing: when the
+// flow ends in a plain task, the response is just that task's outputs
+// (matching the HTTP body curl receives). Otherwise we fall back to the
+// full scope snapshot so the user still sees something.
+func playgroundResultData(flowExec *types.FlowExecution) map[string]any {
+	if flowExec == nil || flowExec.Context == nil {
+		return nil
+	}
+	if flow := flowExec.Flow; flow != nil {
+		flowExec.Context.Logger.Debug().Str("flowName", flow.Name).Msg("playgroundResultData: flowExec has flow")
+		for i := len(flow.Tasks) - 1; i >= 0; i-- {
+			name := flow.Tasks[i].Name
+			flowExec.Context.Logger.Trace().Str("taskName", name).Msg("playgroundResultData: checking task ref")
+			if name == "" {
+				continue
+			}
+			for _, te := range flowExec.Tasks {
+				tn := ""
+				if te.Task != nil {
+					tn = te.Task.Name
+				}
+				flowExec.Context.Logger.Trace().Str("taskName", tn).Bool("outputsNil", te.Outputs == nil).Msg("playgroundResultData: checking exec task")
+				if te.Task != nil && te.Task.Name == name && te.Outputs != nil {
+					return te.Outputs
+				}
+			}
+			break
+		}
+	} else {
+		flowExec.Context.Logger.Debug().Msg("playgroundResultData: flowExec has nil flow")
+	}
+	snapshot := make(map[string]any, len(flowExec.Context.Scope))
+	for k, sv := range flowExec.Context.Scope {
+		snapshot[k] = sv.Value
+	}
+	return snapshot
 }
 
 // ---- traces ---------------------------------------------------------------
@@ -343,6 +377,7 @@ type taskTrace struct {
 	CompletedAt *time.Time     `json:"completed_at,omitempty"`
 	DurationMs  int64          `json:"duration_ms"`
 	Inputs      map[string]any `json:"inputs"`
+	Params      map[string]any `json:"params,omitempty"`
 	Outputs     map[string]any `json:"outputs"`
 	Error       string         `json:"error,omitempty"`
 	Provider    string         `json:"provider,omitempty"`
@@ -363,6 +398,7 @@ func toTaskTraces(flowExec *types.FlowExecution) []taskTrace {
 			StartedAt:   te.StartedAt,
 			CompletedAt: te.CompletedAt,
 			Inputs:      te.Inputs,
+			Params:      te.Params,
 			Outputs:     te.Outputs,
 			Fallback:    te.FallbackUsed,
 			Skipped:     te.Skipped,
@@ -407,7 +443,7 @@ func (s *stubProviderRegistry) Get(name string) (types.ProviderInstance, error) 
 }
 
 func (s *stubProviderRegistry) Register(_ string, _ types.ProviderInstance) error { return nil }
-func (s *stubProviderRegistry) Close() error                                       { return nil }
+func (s *stubProviderRegistry) Close() error                                      { return nil }
 
 // stubProvider implements types.ProviderInstance with no-op everything.
 type stubProvider struct {
