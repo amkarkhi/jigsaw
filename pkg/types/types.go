@@ -286,8 +286,42 @@ type ExecutionContext struct {
 	// fall back to the parent when the key is absent from the local Scope.
 	parentScope *ExecutionContext
 
+	// TraceEnabled controls whether Annotate/AnnotateLink record into the
+	// current TaskExecution.Annotations. Off by default. Set true by the
+	// playground only — production flow execution must leave this false so
+	// annotation calls in logic/wrapper code are a no-op and never leak into
+	// regular flow API responses.
+	TraceEnabled bool
+
+	// currentTaskExec points at the TaskExecution the currently running logic
+	// or wrapper is producing. Set by the task executor immediately before
+	// invoking logic and restored on return. Used by Annotate/AnnotateLink to
+	// find the right row to write into. nil outside an active task.
+	currentTaskExec *TaskExecution
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// Annotate records a key/value on the currently running TaskExecution. No-op
+// unless TraceEnabled is true (set by the playground). Intended for
+// developer-facing trace info — cache hits, timings, free-form debug context.
+// Two writes to the same key overwrite; last write wins.
+func (e *ExecutionContext) Annotate(key string, value any) {
+	if !e.TraceEnabled || e.currentTaskExec == nil {
+		return
+	}
+	if e.currentTaskExec.Annotations == nil {
+		e.currentTaskExec.Annotations = make(map[string]any)
+	}
+	e.currentTaskExec.Annotations[key] = value
+}
+
+// AnnotateLink records a clickable link annotation. The playground renders
+// values of this shape as <a href="url">label</a>. No-op when TraceEnabled is
+// false.
+func (e *ExecutionContext) AnnotateLink(key, label, url string) {
+	e.Annotate(key, map[string]any{"__link": true, "label": label, "url": url})
 }
 
 // ScopeGet returns the named variable, searching the local scope first, then
@@ -341,6 +375,12 @@ type TaskExecution struct {
 	TaskVersion     string // Version of task executed
 	LogicVersion    string // Version of logic handler (if available)
 	Skipped         bool
+
+	// Annotations is a free-form debugging bag populated by logic/wrappers via
+	// ExecutionContext.Annotate/AnnotateLink. Only collected when the
+	// surrounding ExecutionContext has TraceEnabled set (currently only by the
+	// playground). Never serialized through normal flow API responses.
+	Annotations map[string]any
 }
 
 // ExecutionStatus represents execution state

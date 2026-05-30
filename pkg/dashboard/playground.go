@@ -158,6 +158,10 @@ func (d *Dashboard) runPlaygroundFlow(
 	sub int,
 ) (*types.FlowExecution, []taskTrace, error) {
 	execCtx := jigsawctx.New(ctx, flow.Name, sub, inputs, headers)
+	// Enable trace-only annotations for this execution. Logic/wrapper calls
+	// to ctx.Annotate land on TaskExecution.Annotations and are surfaced via
+	// the playground trace. Regular flow API responses leave this off.
+	execCtx.TraceEnabled = true
 
 	providers := d.opts.PlaygroundProviders
 	if providers == nil {
@@ -370,20 +374,25 @@ func playgroundResultData(flowExec *types.FlowExecution) map[string]any {
 // ---- traces ---------------------------------------------------------------
 
 type taskTrace struct {
-	Name        string         `json:"name"`
-	Label       string         `json:"label,omitempty"`
-	Status      string         `json:"status"`
-	StartedAt   time.Time      `json:"started_at"`
-	CompletedAt *time.Time     `json:"completed_at,omitempty"`
-	DurationMs  int64          `json:"duration_ms"`
-	Inputs      map[string]any `json:"inputs"`
-	Params      map[string]any `json:"params,omitempty"`
-	Outputs     map[string]any `json:"outputs"`
-	Error       string         `json:"error,omitempty"`
-	Provider    string         `json:"provider,omitempty"`
-	Logic       string         `json:"logic,omitempty"`
-	Fallback    bool           `json:"fallback_used,omitempty"`
-	Skipped     bool           `json:"skipped,omitempty"`
+	Name            string         `json:"name"`
+	Label           string         `json:"label,omitempty"`
+	Status          string         `json:"status"`
+	StartedAt       time.Time      `json:"started_at"`
+	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
+	DurationMs      int64          `json:"duration_ms"`
+	Inputs          map[string]any `json:"inputs"`
+	Params          map[string]any `json:"params,omitempty"`
+	Outputs         map[string]any `json:"outputs"`
+	Error           string         `json:"error,omitempty"`
+	Provider        string         `json:"provider,omitempty"`
+	Logic           string         `json:"logic,omitempty"`
+	Fallback        bool           `json:"fallback_used,omitempty"`
+	Skipped         bool           `json:"skipped,omitempty"`
+	RetryCount      int            `json:"retry_count,omitempty"`
+	TaskVersion     string         `json:"task_version,omitempty"`
+	ProviderVersion string         `json:"provider_version,omitempty"`
+	LogicVersion    string         `json:"logic_version,omitempty"`
+	Annotations     map[string]any `json:"annotations,omitempty"`
 }
 
 func toTaskTraces(flowExec *types.FlowExecution) []taskTrace {
@@ -393,15 +402,20 @@ func toTaskTraces(flowExec *types.FlowExecution) []taskTrace {
 	out := make([]taskTrace, 0, len(flowExec.Tasks))
 	for _, te := range flowExec.Tasks {
 		t := taskTrace{
-			Name:        te.Task.Name,
-			Status:      string(te.Status),
-			StartedAt:   te.StartedAt,
-			CompletedAt: te.CompletedAt,
-			Inputs:      te.Inputs,
-			Params:      te.Params,
-			Outputs:     te.Outputs,
-			Fallback:    te.FallbackUsed,
-			Skipped:     te.Skipped,
+			Name:            te.Task.Name,
+			Status:          string(te.Status),
+			StartedAt:       te.StartedAt,
+			CompletedAt:     te.CompletedAt,
+			Inputs:          te.Inputs,
+			Params:          te.Params,
+			Outputs:         te.Outputs,
+			Fallback:        te.FallbackUsed,
+			Skipped:         te.Skipped,
+			RetryCount:      te.RetryCount,
+			TaskVersion:     te.TaskVersion,
+			ProviderVersion: te.ProviderVersion,
+			LogicVersion:    te.LogicVersion,
+			Annotations:     te.Annotations,
 		}
 		if te.ActualTask != nil {
 			t.Provider = te.ActualTask.Provider

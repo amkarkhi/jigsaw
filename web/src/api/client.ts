@@ -195,12 +195,20 @@ export interface TaskTrace {
   completed_at?: string;
   duration_ms: number;
   inputs: Record<string, unknown>;
+  params?: Record<string, unknown>;
   outputs: Record<string, unknown>;
   error?: string;
   provider?: string;
   logic?: string;
   fallback_used?: boolean;
   skipped?: boolean;
+  retry_count?: number;
+  task_version?: string;
+  provider_version?: string;
+  logic_version?: string;
+  // Playground-only debug bag populated via ctx.Annotate / ctx.AnnotateLink.
+  // Values of the shape {__link: true, label, url} render as clickable links.
+  annotations?: Record<string, unknown>;
 }
 
 export interface PlaygroundResult {

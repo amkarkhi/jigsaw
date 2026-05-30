@@ -103,8 +103,14 @@ func (CheckCacheLogic) Run(
 		Msg("Cache lookup")
 
 	// Real impl would do: client := prov.GetConnection().(*redis.Client); client.Get(ctx, key)
+	hit := false
+	// Annotations surface only in the playground trace (gated by
+	// ctx.TraceEnabled); production callers pay no cost.
+	ctx.Annotate("cache.hit", hit)
+	ctx.Annotate("cache.key", in.ParsedQuery)
+	ctx.Annotate("cache.provider", cfg.Name)
 	return &cacheOutputs{
-		CacheHit:     false,
+		CacheHit:     hit,
 		CachedResult: nil,
 	}, nil
 }

@@ -40,6 +40,7 @@ func Fork(parent *types.ExecutionContext, branchLabel string, goCtx context.Cont
 		Scope:       make(map[string]types.ScopedVar),
 		Metadata:    cloneMap(parent.Metadata),
 		Versions:    cloneStringMap(parent.Versions),
+		TraceEnabled: parent.TraceEnabled,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}

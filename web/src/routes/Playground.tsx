@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import yaml from "js-yaml";
 import {
@@ -1328,6 +1328,7 @@ function TaskRow({
           {trace.duration_ms > 0 ? ` · ${trace.duration_ms}ms` : ""}
           {trace.fallback_used ? " · fallback" : ""}
           {trace.skipped ? " · skipped" : ""}
+          {trace.retry_count ? ` · retries: ${trace.retry_count}` : ""}
         </span>
       </button>
       {open && (
@@ -1374,6 +1375,42 @@ function TaskRow({
               {jsonPretty(trace.outputs ?? {})}
             </pre>
           </div>
+          {trace.params && Object.keys(trace.params).length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div className="meta" style={{ marginBottom: 4 }}>
+                params
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  fontSize: 11,
+                  fontFamily: "var(--mono)",
+                  whiteSpace: "pre-wrap",
+                  maxHeight: 200,
+                  overflow: "auto",
+                }}
+              >
+                {jsonPretty(trace.params)}
+              </pre>
+            </div>
+          )}
+          {trace.annotations && Object.keys(trace.annotations).length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div className="meta" style={{ marginBottom: 4 }}>
+                annotations
+              </div>
+              <AnnotationsTable data={trace.annotations} />
+            </div>
+          )}
+          {(trace.task_version ||
+            trace.provider_version ||
+            trace.logic_version) && (
+            <div className="meta" style={{ gridColumn: "1 / -1", fontSize: 11 }}>
+              {trace.task_version && <>task: {trace.task_version} </>}
+              {trace.provider_version && <> · provider: {trace.provider_version} </>}
+              {trace.logic_version && <> · logic: {trace.logic_version}</>}
+            </div>
+          )}
           {trace.error && (
             <div style={{ gridColumn: "1 / -1" }}>
               <div
@@ -1391,6 +1428,50 @@ function TaskRow({
       )}
     </div>
   );
+}
+
+function AnnotationsTable({ data }: { data: Record<string, unknown> }) {
+  const entries = Object.entries(data);
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(120px, max-content) 1fr",
+        gap: "4px 12px",
+        fontSize: 11,
+        fontFamily: "var(--mono)",
+      }}
+    >
+      {entries.map(([k, v]) => (
+        <Fragment key={k}>
+          <div style={{ color: "var(--text-dim)" }}>{k}</div>
+          <div style={{ wordBreak: "break-word" }}>{renderAnnotationValue(v)}</div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function renderAnnotationValue(v: unknown): React.ReactNode {
+  if (v && typeof v === "object" && (v as { __link?: boolean }).__link) {
+    const link = v as { label?: string; url?: string };
+    if (link.url) {
+      return (
+        <a
+          href={link.url}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: "var(--accent)" }}
+        >
+          {link.label || link.url}
+        </a>
+      );
+    }
+  }
+  if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+    return String(v);
+  }
+  return <span style={{ whiteSpace: "pre-wrap" }}>{jsonPretty(v)}</span>;
 }
 
 function jsonPretty(v: unknown): string {

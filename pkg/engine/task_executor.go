@@ -38,6 +38,13 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		Outputs:   make(map[string]any),
 	}
 
+	// Make this taskExec the annotation target for any logic/wrapper code
+	// that calls ctx.Annotate while it runs. Restore the previous value on
+	// return so nested invocations (via wrappers / InvokeTask) don't leak.
+	prevTaskExec := types.CurrentTaskExec(execCtx)
+	types.SetCurrentTaskExec(execCtx, taskExec)
+	defer types.SetCurrentTaskExec(execCtx, prevTaskExec)
+
 	resolvedTask, err := t.resolveTaskInheritance(task)
 	if err != nil {
 		taskExec.Status = types.StatusFailed
