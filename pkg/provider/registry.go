@@ -41,23 +41,38 @@ func (r *Registry) RegisterConfig(provider *types.Provider) error {
 	return nil
 }
 
-// Get retrieves or initializes a provider instance
+// Get retrieves or initializes a provider instance.
+//
+// If a typed instance was already registered via Register() — for example
+// by a host-side composition root like search-gateway's
+// internal/providers.BuildRegistry — Get returns that instance verbatim,
+// even when it is not currently connected. Reconnecting is the caller's
+// job (task_executor.executeWithProvider already does this). Returning the
+// existing instance is critical: replacing it with a generic BaseProvider
+// silently breaks type assertions inside logic handlers (e.g. a cast to
+// *httpclient.Connection in the host's package would suddenly fail).
+//
+// Only when no instance has been registered yet does Get fall through to
+// the default-init path that creates a BaseProvider for the configured
+// init_mode.
 func (r *Registry) Get(name string) (types.ProviderInstance, error) {
 	r.mu.RLock()
 	instance, exists := r.providers[name]
 	config, hasConfig := r.configs[name]
 	r.mu.RUnlock()
-	
+
 	if !hasConfig {
 		return nil, fmt.Errorf("provider '%s' not configured", name)
 	}
-	
-	// Return existing instance if already initialized
-	if exists && instance.IsConnected() {
+
+	// Host-registered typed instance wins. Connect-on-use is handled by the
+	// task executor; we MUST NOT replace the typed instance with a generic
+	// BaseProvider here.
+	if exists {
 		return instance, nil
 	}
-	
-	// Initialize based on init mode
+
+	// No instance yet — initialize a default one based on init mode.
 	switch config.InitMode {
 	case "lazy":
 		return r.initLazy(name, config)
