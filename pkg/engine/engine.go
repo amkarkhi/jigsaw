@@ -257,8 +257,17 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 		return nil, err
 	}
 
-	params := make(map[string]any, len(resolved.Params)+len(paramOverrides))
+	// Flow-level overrides recorded on ctx.Nested.Params (by executeWithWrapper)
+	// already represent task defaults merged with the flow TaskRef's params, so
+	// they should reach the inner task. Explicit paramOverrides from the caller
+	// still win on top.
+	var nestedParams map[string]any
+	if ctx.Nested != nil && ctx.Nested.Task == name {
+		nestedParams = ctx.Nested.Params
+	}
+	params := make(map[string]any, len(resolved.Params)+len(nestedParams)+len(paramOverrides))
 	maps.Copy(params, resolved.Params)
+	maps.Copy(params, nestedParams)
 	maps.Copy(params, paramOverrides)
 
 	if inputs == nil {

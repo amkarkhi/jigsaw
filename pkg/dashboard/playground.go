@@ -377,6 +377,7 @@ type taskTrace struct {
 	CompletedAt *time.Time     `json:"completed_at,omitempty"`
 	DurationMs  int64          `json:"duration_ms"`
 	Inputs      map[string]any `json:"inputs"`
+	Params      map[string]any `json:"params,omitempty"`
 	Outputs     map[string]any `json:"outputs"`
 	Error       string         `json:"error,omitempty"`
 	Provider    string         `json:"provider,omitempty"`
@@ -397,6 +398,7 @@ func toTaskTraces(flowExec *types.FlowExecution) []taskTrace {
 			StartedAt:   te.StartedAt,
 			CompletedAt: te.CompletedAt,
 			Inputs:      te.Inputs,
+			Params:      te.Params,
 			Outputs:     te.Outputs,
 			Fallback:    te.FallbackUsed,
 			Skipped:     te.Skipped,

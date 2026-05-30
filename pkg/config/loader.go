@@ -246,6 +246,7 @@ type rawTaskRef struct {
 	Overrides []types.TaskOverride `yaml:"overrides"`
 	Parallel  *rawParallelBlock   `yaml:"parallel"`
 	Bind      yaml.Node           `yaml:"bind"`
+	Params    map[string]any      `yaml:"params"`
 
 	// Forbidden legacy field — presence triggers a load error.
 	As yaml.Node `yaml:"as"`
@@ -273,6 +274,7 @@ func (r *rawTaskRef) toTaskRef(flowName string) (*types.TaskRef, error) {
 	ref := &types.TaskRef{
 		Name:      r.Name,
 		Overrides: r.Overrides,
+		Params:    r.Params,
 	}
 
 	if r.Parallel != nil {

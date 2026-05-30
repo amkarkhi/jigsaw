@@ -328,6 +328,7 @@ type TaskExecution struct {
 	Task            *Task
 	ActualTask      *Task // May differ if overridden
 	Inputs          map[string]any
+	Params          map[string]any
 	Outputs         map[string]any
 	Status          ExecutionStatus
 	StartedAt       time.Time

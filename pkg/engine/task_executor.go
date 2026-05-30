@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/amkarkhi/jigsaw/pkg/types"
@@ -72,6 +73,7 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	params := make(map[string]any, len(resolvedTask.Params)+len(ref.Params))
 	maps.Copy(params, resolvedTask.Params)
 	maps.Copy(params, ref.Params)
+	taskExec.Params = params
 
 	var outputs map[string]any
 	var execErr error
@@ -256,9 +258,7 @@ func (t *TaskExecutor) executeTaskLogic(execCtx *types.ExecutionContext, logic s
 	if err != nil {
 		t.logger.Warn().Str("logic", logic).Err(err).Msg("Logic handler not found, returning inputs as outputs")
 		outputs := make(map[string]any, len(inputs))
-		for k, v := range inputs {
-			outputs[k] = v
-		}
+		maps.Copy(outputs, inputs)
 		outputs["_logic_not_implemented"] = logic
 		return outputs, nil
 	}
@@ -395,13 +395,20 @@ func (t *TaskExecutor) executeWithWrapper(
 		maps.Copy(params, wrapper.Params)
 	}
 	maps.Copy(params, ref.Params)
+	taskExec.Params = params
 
 	// Set ctx.Nested to point to the original task so the wrapper logic
-	// knows which task to invoke.
+	// knows which task to invoke. Params are the inner task's resolved
+	// params — defaults from the task definition with flow-level overrides
+	// applied — so wrappers (e.g. caches) can vary their behaviour on the
+	// same overrides the inner task will run with.
+	innerParams := make(map[string]any, len(originalTask.Params)+len(ref.Params))
+	maps.Copy(innerParams, originalTask.Params)
+	maps.Copy(innerParams, ref.Params)
 	prevNested := execCtx.Nested
 	execCtx.Nested = &types.WrapperRef{
 		Task:   originalTask.Name,
-		Params: originalTask.Params,
+		Params: innerParams,
 	}
 	defer func() { execCtx.Nested = prevNested }()
 
@@ -513,12 +520,7 @@ func (t *TaskExecutor) resolveTaskInheritance(task *types.Task) (*types.Task, er
 
 // isRequired reports whether fieldName is listed in the schema's Required slice.
 func isRequired(schema *jsonschema.Schema, fieldName string) bool {
-	for _, r := range schema.Required {
-		if r == fieldName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schema.Required, fieldName)
 }
 
 // schemaTypeString extracts the type string from a property schema.
