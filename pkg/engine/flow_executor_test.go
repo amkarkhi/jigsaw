@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
 	"github.com/amkarkhi/jigsaw/pkg/config"
+	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/invopop/jsonschema"
 	"github.com/rs/zerolog"
@@ -30,10 +30,12 @@ func (nullProviders) Close() error                                  { return nil
 // ---- minimal Logic[I,O,P] wrappers for tests --------------------------------
 
 // sleepIO / sleepLogic replace the old LogicHandler-based sleepHandler.
-type sleepIO struct{}
-type sleepOut struct {
-	Value string `json:"value"`
-}
+type (
+	sleepIO  struct{}
+	sleepOut struct {
+		Value string `json:"value"`
+	}
+)
 type sleepP struct{}
 
 type sleepLogic struct {
@@ -51,20 +53,6 @@ func (s sleepLogic) Run(ctx *types.ExecutionContext, _ sleepIO, _ sleepP) (*slee
 		return nil, ctx.Context.Err()
 	}
 }
-
-// funcIO / funcLogic replace the old LogicHandler-based funcHandler. The
-// function receives raw maps so tests that need fine-grained control can
-// bypass typed I/O by injecting scope values and reading raw outputs.
-type funcRawIO struct {
-	// Values passed to the function come from scope via bind; the struct
-	// carries whatever keys the test scoped in. We use map[string]any
-	// round-trips to pass arbitrary data through.
-	Data map[string]any `json:"data,omitempty"`
-}
-type funcRawOut struct {
-	Data map[string]any `json:"data,omitempty"`
-}
-type funcRawP struct{}
 
 // rawFuncLogic wires an arbitrary function as a Logic implementation. The
 // function receives/returns map[string]any; the typed wrappers handle
@@ -164,8 +152,10 @@ func TestParallelBranchScopeNamespacing(t *testing.T) {
 						},
 					}},
 					// collector uses bind.in to pull branch-namespaced outputs
-					{Name: "collector",
-						Bind: &types.Bind{In: map[string]string{"left_value": "L.value", "right_value": "R.value"}}},
+					{
+						Name: "collector",
+						Bind: &types.Bind{In: map[string]string{"left_value": "L.value", "right_value": "R.value"}},
+					},
 				},
 			},
 		},
@@ -324,6 +314,7 @@ type parseQueryLogic struct{}
 func (parseQueryLogic) LogicMeta() LogicMeta {
 	return LogicMeta{Name: "parse_q", Description: "parse query", Version: "1.0.0"}
 }
+
 func (parseQueryLogic) Run(_ *types.ExecutionContext, in parseQueryInputs, _ parseQueryParams) (*parseQueryOutputs, error) {
 	if in.Q == "" {
 		return nil, fmt.Errorf("Q required")
@@ -432,8 +423,10 @@ func TestValidatorCatchesMissingBindSource(t *testing.T) {
 type validatorIn struct {
 	X string `json:"x"`
 }
-type validatorOut struct{}
-type validatorP struct{}
+type (
+	validatorOut struct{}
+	validatorP   struct{}
+)
 
 type validatorTestLogic struct{}
 

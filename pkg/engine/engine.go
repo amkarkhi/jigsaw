@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	jigsawctx "github.com/amkarkhi/jigsaw/pkg/context"
@@ -139,6 +140,17 @@ func (e *Engine) ExecuteFlow(ctx context.Context, flowName string, sub int, para
 
 	result.Status = "success"
 	result.Data = scopeSnapshot
+	// The terminal task in the flow's `tasks:` list owns the HTTP response
+	// shape: its Outputs become Data so the body matches the response task's
+	// schema directly. Per-task traces still expose every step's outputs.
+	if last := terminalTask(flow); last != "" {
+		for _, te := range flowExec.Tasks {
+			if te.Task != nil && te.Task.Name == last && te.Outputs != nil {
+				result.Data = te.Outputs
+				break
+			}
+		}
+	}
 
 	completedEvt := e.logger.Info().Str("flow", flowName).Str("request_id", execCtx.RequestID).Int64("execution_time", executionTime).Int("tasks_executed", len(flowExec.Tasks))
 	if execCtx.FlowVersion != "" {
@@ -150,6 +162,23 @@ func (e *Engine) ExecuteFlow(ctx context.Context, flowName string, sub int, para
 	completedEvt.Msg("Flow execution completed")
 
 	return result, nil
+}
+
+// terminalTask returns the name of the flow's final task — the one whose
+// outputs are the HTTP response body. Parallel blocks are skipped (no
+// single output owner); we walk backwards through the top-level Tasks
+// list and return the first plain task ref we find. Returns "" if the
+// flow ends in a parallel block or has no named terminal task.
+func terminalTask(flow *types.Flow) string {
+	if flow == nil {
+		return ""
+	}
+	for i := len(flow.Tasks) - 1; i >= 0; i-- {
+		if flow.Tasks[i].Name != "" {
+			return flow.Tasks[i].Name
+		}
+	}
+	return ""
 }
 
 // GetFlow returns a flow by name.
@@ -229,12 +258,8 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 	}
 
 	params := make(map[string]any, len(resolved.Params)+len(paramOverrides))
-	for k, v := range resolved.Params {
-		params[k] = v
-	}
-	for k, v := range paramOverrides {
-		params[k] = v
-	}
+	maps.Copy(params, resolved.Params)
+	maps.Copy(params, paramOverrides)
 
 	if inputs == nil {
 		inputs = map[string]any{}
