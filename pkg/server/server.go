@@ -39,6 +39,10 @@ type Options struct {
 	HotReload bool
 	LogLevel  string
 	Pretty    bool
+	// Middleware is appended to the Gin engine after the built-in recovery
+	// and logging middleware, but before route registration. Hosts use this
+	// to inject auth, rate limiting, tracing, etc.
+	Middleware []gin.HandlerFunc
 }
 
 // New creates a new server instance
@@ -82,10 +86,13 @@ func New(cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 	s.ginEngine = gin.New()
 	s.ginEngine.Use(gin.Recovery())
 	s.ginEngine.Use(s.loggingMiddleware())
-	
+	for _, mw := range opts.Middleware {
+		s.ginEngine.Use(mw)
+	}
+
 	// Register routes
 	s.registerRoutes()
-	
+
 	return s
 }
 
@@ -120,10 +127,13 @@ func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *type
 	s.ginEngine = gin.New()
 	s.ginEngine.Use(gin.Recovery())
 	s.ginEngine.Use(s.loggingMiddleware())
-	
+	for _, mw := range opts.Middleware {
+		s.ginEngine.Use(mw)
+	}
+
 	// Register routes
 	s.registerRoutes()
-	
+
 	return s
 }
 
