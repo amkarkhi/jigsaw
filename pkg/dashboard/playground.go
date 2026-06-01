@@ -157,6 +157,41 @@ func (d *Dashboard) runPlaygroundFlow(
 	headers map[string]string,
 	sub int,
 ) (*types.FlowExecution, []taskTrace, error) {
+	// Give the host a chance to rewrite the request (e.g. apply
+	// celsius-style traffic-distribution overrides that would normally
+	// fire in the host's HTTP middleware chain, which the playground
+	// bypasses). The hook may swap Flow/Sub or decorate the context.
+	if d.opts.PlaygroundPreExecute != nil {
+		req, newCtx, err := d.opts.PlaygroundPreExecute(ctx, PlaygroundRequest{
+			Flow:    flow.Name,
+			Sub:     sub,
+			Headers: headers,
+			Inputs:  inputs,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("playground pre-execute hook: %w", err)
+		}
+		if newCtx != nil {
+			ctx = newCtx
+		}
+		if req.Sub != sub {
+			sub = req.Sub
+		}
+		if req.Headers != nil {
+			headers = req.Headers
+		}
+		if req.Inputs != nil {
+			inputs = req.Inputs
+		}
+		// Flow rewrite: if the hook picked a different flow that exists
+		// in the loaded config, run that one instead. Unknown names are
+		// ignored so a misconfigured hook can't break the playground.
+		if req.Flow != "" && req.Flow != flow.Name {
+			if newFlow, ok := cfg.Flows[req.Flow]; ok {
+				flow = newFlow
+			}
+		}
+	}
 	execCtx := jigsawctx.New(ctx, flow.Name, sub, inputs, headers)
 	// Enable trace-only annotations for this execution. Logic/wrapper calls
 	// to ctx.Annotate land on TaskExecution.Annotations and are surfaced via

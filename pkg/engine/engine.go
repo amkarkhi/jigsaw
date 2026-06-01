@@ -265,10 +265,12 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 	if ctx.Nested != nil && ctx.Nested.Task == name {
 		nestedParams = ctx.Nested.Params
 	}
-	params := make(map[string]any, len(resolved.Params)+len(nestedParams)+len(paramOverrides))
+	overlay := types.ParamOverlayForTask(ctx.Context, name)
+	params := make(map[string]any, len(resolved.Params)+len(nestedParams)+len(paramOverrides)+len(overlay))
 	maps.Copy(params, resolved.Params)
 	maps.Copy(params, nestedParams)
 	maps.Copy(params, paramOverrides)
+	maps.Copy(params, overlay)
 
 	if inputs == nil {
 		inputs = map[string]any{}

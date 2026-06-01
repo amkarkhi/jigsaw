@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import yaml from "js-yaml";
 import {
   api,
+  EndpointSummary,
   FlowSummary,
   LogicHandler,
   PlaygroundResult,
@@ -10,6 +11,14 @@ import {
   TaskTrace,
 } from "../api/client";
 import { DraftEntry, deleteDraft, listDrafts, saveDraft } from "../lib/drafts";
+import {
+  HistoryHeader,
+  PlaygroundHistoryEntry,
+  deleteHistory,
+  listHistory,
+  pushHistory,
+  renameHistory,
+} from "../lib/playgroundHistory";
 import { useConfirmDialog } from "../components/useDialog";
 
 // Playground — runs a flow against user-supplied inputs in a sandbox and
@@ -28,7 +37,7 @@ import { useConfirmDialog } from "../components/useDialog";
 // engine's "echo inputs as outputs" stub. Right for shape checking;
 // not for end-to-end behaviour testing.
 
-type Mode = "saved" | "custom" | "task" | "logic";
+type Mode = "saved" | "custom" | "task" | "logic" | "endpoint";
 
 // SessionStorage key prefix for the "Test in playground" handoff used by
 // the FlowGraph editor: it stashes the current (possibly unsaved) YAML
@@ -41,6 +50,8 @@ export default function Playground() {
   const initialFlow = searchParams.get("flow") ?? "";
   const initialTask = searchParams.get("task") ?? "";
   const initialLogic = searchParams.get("logic") ?? "";
+  const initialEndpoint = searchParams.get("endpoint") ?? "";
+  const initialSub = searchParams.get("sub") ?? "";
   const initialCustomKey = searchParams.get("customKey") ?? "";
   const initialCustomYAML = useMemo(() => {
     if (!initialCustomKey) return "";
@@ -55,6 +66,7 @@ export default function Playground() {
 
   const [mode, setMode] = useState<Mode>(() => {
     if (initialCustomKey) return "custom";
+    if (initialEndpoint) return "endpoint";
     if (initialTask) return "task";
     if (initialLogic) return "logic";
     return "saved";
@@ -62,6 +74,7 @@ export default function Playground() {
   const [flows, setFlows] = useState<FlowSummary[]>([]);
   const [palette, setPalette] = useState<TaskSummary[]>([]);
   const [logics, setLogics] = useState<LogicHandler[]>([]);
+  const [endpoints, setEndpoints] = useState<EndpointSummary[]>([]);
   const [enabled, setEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -80,6 +93,10 @@ export default function Playground() {
     api
       .logic()
       .then((r) => setLogics(r.handlers ?? []))
+      .catch(() => {});
+    api
+      .endpoints()
+      .then(setEndpoints)
       .catch(() => {});
   }, []);
 
@@ -126,6 +143,12 @@ export default function Playground() {
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
         <button
+          className={`btn ${mode === "endpoint" ? "btn-primary" : ""}`}
+          onClick={() => setMode("endpoint")}
+        >
+          Endpoint
+        </button>
+        <button
           className={`btn ${mode === "saved" ? "btn-primary" : ""}`}
           onClick={() => setMode("saved")}
         >
@@ -163,7 +186,132 @@ export default function Playground() {
       {mode === "logic" && (
         <SingleLogicRunner logics={logics} initialLogic={initialLogic} />
       )}
+      {mode === "endpoint" && (
+        <EndpointRunner
+          endpoints={endpoints}
+          initialEndpoint={initialEndpoint}
+          initialSub={initialSub}
+        />
+      )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EndpointRunner — pick an endpoint + sub mapping and run its mapped flow
+// against test inputs. Mirrors what the HTTP layer would do at request time,
+// but in the dry-run sandbox so providers/logic aren't actually hit.
+// ---------------------------------------------------------------------------
+
+function EndpointRunner({
+  endpoints,
+  initialEndpoint,
+  initialSub,
+}: {
+  endpoints: EndpointSummary[];
+  initialEndpoint: string;
+  initialSub: string;
+}) {
+  const [endpointName, setEndpointName] = useState(initialEndpoint);
+  const [sub, setSub] = useState<number>(
+    initialSub ? Number(initialSub) || 1 : 1,
+  );
+
+  useEffect(() => {
+    if (!endpointName && endpoints.length > 0) {
+      setEndpointName(endpoints[0].name);
+    }
+  }, [endpoints, endpointName]);
+
+  const ep = endpoints.find((e) => e.name === endpointName);
+
+  // When the selected endpoint changes, snap sub to one of its mappings
+  // (preferring the initial sub from the URL if it's valid).
+  useEffect(() => {
+    if (!ep || ep.flows.length === 0) return;
+    const subs = ep.flows.map((m) => m.sub);
+    if (!subs.includes(sub)) {
+      setSub(subs[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endpointName]);
+
+  const mapping = ep?.flows.find((m) => m.sub === sub);
+  const canRun = !!(ep && mapping);
+
+  return (
+    <RunPanel
+      label="Run endpoint"
+      canRun={canRun}
+      historyScope={endpointName ? `endpoint:${endpointName}` : undefined}
+      run={(inputs, headers) => {
+        if (!mapping) return Promise.reject(new Error("no flow mapped for this sub"));
+        return api.playgroundRun(mapping.flow, inputs, headers, sub);
+      }}
+      hideSub
+      left={
+        <>
+          <label className="meta" style={{ display: "block" }}>
+            endpoint
+          </label>
+          <select
+            className="input"
+            value={endpointName}
+            onChange={(e) => setEndpointName(e.target.value)}
+          >
+            {endpoints.length === 0 && <option value="">no endpoints</option>}
+            {endpoints.map((e) => (
+              <option key={e.name} value={e.name}>
+                {e.method} {e.path} ({e.name})
+              </option>
+            ))}
+          </select>
+
+          {ep && (
+            <>
+              {ep.description && <div className="meta">{ep.description}</div>}
+              <label className="meta" style={{ display: "block" }}>
+                sub <span style={{ opacity: 0.6 }}>(flow variant)</span>
+              </label>
+              {ep.flows.length === 0 ? (
+                <div className="diag warning">
+                  This endpoint has no flow mappings — add one on the Endpoints
+                  page before testing.
+                </div>
+              ) : (
+                <select
+                  className="input"
+                  value={sub}
+                  onChange={(e) => setSub(Number(e.target.value))}
+                >
+                  {ep.flows.map((m) => (
+                    <option key={m.sub} value={m.sub}>
+                      sub={m.sub} → {m.flow}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {ep.request_params && ep.request_params.length > 0 && (
+                <div className="meta" style={{ marginTop: 4 }}>
+                  <span style={{ opacity: 0.7 }}>seeds:</span>{" "}
+                  {ep.request_params.map((p) => (
+                    <span
+                      key={p}
+                      className="badge mono"
+                      style={{ marginRight: 4 }}
+                      title="Scope key seeded from the request before the flow runs — provide it in inputs"
+                    >
+                      {p}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </>
+      }
+    />
   );
 }
 
@@ -187,6 +335,7 @@ function SavedFlowRunner({
     <RunPanel
       label="Run flow"
       canRun={!!flowName}
+      historyScope={flowName ? `flow:${flowName}` : undefined}
       run={(inputs, headers, sub) =>
         api.playgroundRun(flowName, inputs, headers, sub)
       }
@@ -325,6 +474,7 @@ function CustomFlowRunner({
       <RunPanel
         label="Run custom flow"
         canRun={ready}
+        historyScope="custom"
         run={(inputs, headers, sub) =>
           api.playgroundRunYAML(flowYAML, inputs, headers, sub)
         }
@@ -794,6 +944,9 @@ function SingleTaskRunner({
     <RunPanel
       label="Run task"
       canRun={!!taskName}
+      historyScope={taskName ? `task:${taskName}` : undefined}
+      paramsText={paramsText}
+      setParamsText={setParamsText}
       run={(inputs, headers, sub) => {
         const params = parseParams();
         if (params === null)
@@ -879,6 +1032,9 @@ function SingleLogicRunner({
     <RunPanel
       label="Run logic"
       canRun={!!logicName}
+      historyScope={logicName ? `logic:${logicName}` : undefined}
+      paramsText={paramsText}
+      setParamsText={setParamsText}
       run={(inputs, headers, sub) => {
         const params = parseParams();
         if (params === null)
@@ -935,6 +1091,10 @@ function RunPanel({
   canRun,
   run,
   left,
+  hideSub,
+  historyScope,
+  paramsText,
+  setParamsText,
 }: {
   label: string;
   canRun: boolean;
@@ -944,6 +1104,14 @@ function RunPanel({
     sub: number,
   ) => Promise<{ status: number; data: PlaygroundResult }>;
   left: React.ReactNode;
+  hideSub?: boolean;
+  // localStorage bucket for history. Omit to disable persistence for this
+  // mode (e.g. when there's no stable identity to key by).
+  historyScope?: string;
+  // Optional controlled params text — passed by modes that have a params
+  // editor (single task, single logic) so history can restore it.
+  paramsText?: string;
+  setParamsText?: (v: string) => void;
 }) {
   const [sub, setSub] = useState(0);
   const [inputsText, setInputsText] = useState("{\n  \n}\n");
@@ -956,10 +1124,59 @@ function RunPanel({
   // Headers: two-mode editor. "rows" lets the user type key/value pairs
   // (the common case for HTTP headers), "json" lets them paste a saved
   // headers blob. Both reduce to a flat string→string map at run time.
+  // Each row carries an `enabled` flag so the user can keep a header around
+  // (e.g. auth token they'll need again) without sending it on this run.
   const [hdrMode, setHdrMode] = useState<"rows" | "json">("rows");
-  const [hdrRows, setHdrRows] = useState<{ key: string; value: string }[]>([]);
+  const [hdrRows, setHdrRows] = useState<HistoryHeader[]>([]);
   const [hdrText, setHdrText] = useState("{\n  \n}\n");
   const [hdrErr, setHdrErr] = useState<string | null>(null);
+
+  const [history, setHistory] = useState<PlaygroundHistoryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    if (!historyScope) return;
+    setHistory(listHistory(historyScope));
+  }, [historyScope]);
+
+  // Reload form state from a history entry. Coerces from the persisted
+  // shape, tolerant of older entries that may be missing fields.
+  function loadEntry(entry: PlaygroundHistoryEntry) {
+    setInputsText(entry.inputs ?? "{\n  \n}\n");
+    setHdrRows(
+      (entry.headers ?? []).map((h) => ({
+        key: h.key,
+        value: h.value,
+        enabled: h.enabled !== false,
+      })),
+    );
+    setHdrMode("rows");
+    if (entry.sub !== undefined) setSub(entry.sub);
+    if (setParamsText && entry.params !== undefined) setParamsText(entry.params);
+    setHistoryOpen(false);
+  }
+
+  function recordRun() {
+    if (!historyScope) return;
+    pushHistory(historyScope, {
+      inputs: inputsText,
+      headers: hdrRows,
+      params: paramsText,
+      sub: hideSub ? undefined : sub,
+    });
+    setHistory(listHistory(historyScope));
+  }
+
+  function removeEntry(id: string) {
+    if (!historyScope) return;
+    deleteHistory(historyScope, id);
+    setHistory(listHistory(historyScope));
+  }
+
+  function relabelEntry(id: string, label: string) {
+    if (!historyScope) return;
+    renameHistory(historyScope, id, label);
+    setHistory(listHistory(historyScope));
+  }
 
   function parseInputs(): Record<string, unknown> | null {
     const trimmed = inputsText.trim();
@@ -982,6 +1199,7 @@ function RunPanel({
     if (hdrMode === "rows") {
       const out: Record<string, string> = {};
       for (const r of hdrRows) {
+        if (r.enabled === false) continue;
         const k = r.key.trim();
         if (!k) continue;
         out[k] = r.value;
@@ -1029,6 +1247,7 @@ function RunPanel({
       const { status, data } = await run(inputs, headers, sub);
       if (status !== 200) setReqErr(`server returned ${status}`);
       setResult(data);
+      recordRun();
     } catch (e) {
       setReqErr((e as Error).message);
     } finally {
@@ -1065,17 +1284,21 @@ function RunPanel({
         <h2 style={{ margin: 0 }}>Inputs</h2>
         {left}
 
-        <label className="meta" style={{ display: "block" }}>
-          sub <span style={{ opacity: 0.6 }}>(endpoint variant)</span>
-        </label>
-        <input
-          className="input"
-          type="number"
-          min={0}
-          value={sub}
-          onChange={(e) => setSub(Number(e.target.value || 0))}
-          style={{ width: 120 }}
-        />
+        {!hideSub && (
+          <>
+            <label className="meta" style={{ display: "block" }}>
+              sub <span style={{ opacity: 0.6 }}>(endpoint variant)</span>
+            </label>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              value={sub}
+              onChange={(e) => setSub(Number(e.target.value || 0))}
+              style={{ width: 120 }}
+            />
+          </>
+        )}
 
         <label className="meta" style={{ display: "block" }}>
           inputs <span style={{ opacity: 0.6 }}>(JSON object)</span>
@@ -1128,7 +1351,20 @@ function RunPanel({
               </div>
             )}
             {hdrRows.map((row, i) => (
-              <div key={i} style={{ display: "flex", gap: 4 }}>
+              <div key={i} style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={row.enabled !== false}
+                  onChange={(e) =>
+                    setHdrRows((cur) =>
+                      cur.map((r, idx) =>
+                        idx === i ? { ...r, enabled: e.target.checked } : r,
+                      ),
+                    )
+                  }
+                  title={row.enabled === false ? "Disabled — header not sent" : "Enabled"}
+                  style={{ margin: "0 4px 0 0" }}
+                />
                 <input
                   className="input"
                   placeholder="key"
@@ -1140,7 +1376,13 @@ function RunPanel({
                       ),
                     )
                   }
-                  style={{ flex: 1, fontSize: 12, fontFamily: "var(--mono)" }}
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    fontFamily: "var(--mono)",
+                    opacity: row.enabled === false ? 0.45 : 1,
+                    textDecoration: row.enabled === false ? "line-through" : "none",
+                  }}
                 />
                 <input
                   className="input"
@@ -1153,7 +1395,12 @@ function RunPanel({
                       ),
                     )
                   }
-                  style={{ flex: 2, fontSize: 12, fontFamily: "var(--mono)" }}
+                  style={{
+                    flex: 2,
+                    fontSize: 12,
+                    fontFamily: "var(--mono)",
+                    opacity: row.enabled === false ? 0.45 : 1,
+                  }}
                 />
                 <button
                   className="btn"
@@ -1176,7 +1423,7 @@ function RunPanel({
               className="btn"
               type="button"
               onClick={() =>
-                setHdrRows((cur) => [...cur, { key: "", value: "" }])
+                setHdrRows((cur) => [...cur, { key: "", value: "", enabled: true }])
               }
               style={{
                 alignSelf: "flex-start",
@@ -1198,7 +1445,7 @@ function RunPanel({
         )}
         {hdrErr && <div className="diag error">headers: {hdrErr}</div>}
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button
             className="btn btn-primary"
             onClick={doRun}
@@ -1206,6 +1453,16 @@ function RunPanel({
           >
             {running ? "Running…" : label}
           </button>
+          {historyScope && (
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setHistoryOpen((v) => !v)}
+              title="Recent runs for this selection"
+            >
+              History {history.length > 0 ? `(${history.length})` : ""}
+            </button>
+          )}
           {result && (
             <span className="meta" style={{ alignSelf: "center" }}>
               {result.status} · {result.tasks.length} task
@@ -1213,6 +1470,15 @@ function RunPanel({
             </span>
           )}
         </div>
+        {historyScope && historyOpen && (
+          <HistoryPanel
+            entries={history}
+            onLoad={loadEntry}
+            onDelete={removeEntry}
+            onRename={relabelEntry}
+            onClose={() => setHistoryOpen(false)}
+          />
+        )}
         {reqErr && <div className="diag error">{reqErr}</div>}
       </section>
 
@@ -1269,6 +1535,192 @@ function RunPanel({
           </>
         )}
       </section>
+    </div>
+  );
+}
+
+function HistoryPanel({
+  entries,
+  onLoad,
+  onDelete,
+  onRename,
+  onClose,
+}: {
+  entries: PlaygroundHistoryEntry[];
+  onLoad: (e: PlaygroundHistoryEntry) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, label: string) => void;
+  onClose: () => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <div
+        className="empty"
+        style={{
+          padding: 12,
+          border: "1px solid var(--border)",
+          borderRadius: 4,
+          background: "var(--bg)",
+        }}
+      >
+        No history yet — running this view will record it here.
+        <button
+          className="btn"
+          type="button"
+          onClick={onClose}
+          style={{ marginLeft: 8, padding: "2px 8px", fontSize: 11 }}
+        >
+          Close
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        background: "var(--bg)",
+        display: "flex",
+        flexDirection: "column",
+        maxHeight: 260,
+        overflow: "auto",
+      }}
+    >
+      <div
+        style={{
+          padding: "6px 10px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <strong style={{ flex: 1, fontSize: 12 }}>Recent runs</strong>
+        <button
+          className="btn"
+          type="button"
+          onClick={onClose}
+          style={{ padding: "2px 8px", fontSize: 11 }}
+        >
+          Close
+        </button>
+      </div>
+      {entries.map((e) => (
+        <HistoryRow
+          key={e.id}
+          entry={e}
+          onLoad={() => onLoad(e)}
+          onDelete={() => onDelete(e.id)}
+          onRename={(label) => onRename(e.id, label)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function HistoryRow({
+  entry,
+  onLoad,
+  onDelete,
+  onRename,
+}: {
+  entry: PlaygroundHistoryEntry;
+  onLoad: () => void;
+  onDelete: () => void;
+  onRename: (label: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(entry.label ?? "");
+  const enabledHeaders = entry.headers.filter((h) => h.enabled !== false && h.key.trim());
+  const preview =
+    entry.label ||
+    (enabledHeaders.length > 0
+      ? enabledHeaders.map((h) => h.key).join(", ")
+      : entry.inputs.replace(/\s+/g, " ").slice(0, 60));
+  return (
+    <div
+      style={{
+        padding: "6px 10px",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        borderBottom: "1px solid var(--border)",
+        fontSize: 12,
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {editing ? (
+          <input
+            autoFocus
+            className="input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              onRename(draft);
+              setEditing(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onRename(draft);
+                setEditing(false);
+              } else if (e.key === "Escape") {
+                setEditing(false);
+              }
+            }}
+            style={{ width: "100%", fontSize: 12 }}
+          />
+        ) : (
+          <div
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={preview}
+          >
+            {preview || <span className="meta">(empty)</span>}
+          </div>
+        )}
+        <div className="meta" style={{ fontSize: 10 }}>
+          {new Date(entry.savedAt).toLocaleString()}
+          {entry.sub !== undefined ? ` · sub=${entry.sub}` : ""}
+          {enabledHeaders.length > 0 ? ` · ${enabledHeaders.length} hdr` : ""}
+        </div>
+      </div>
+      <button
+        className="btn"
+        type="button"
+        onClick={onLoad}
+        style={{ padding: "2px 8px", fontSize: 11 }}
+      >
+        Load
+      </button>
+      <button
+        className="btn"
+        type="button"
+        onClick={() => {
+          setDraft(entry.label ?? "");
+          setEditing(true);
+        }}
+        style={{ padding: "2px 8px", fontSize: 11 }}
+        title="Rename"
+      >
+        ✎
+      </button>
+      <button
+        className="btn"
+        type="button"
+        onClick={onDelete}
+        style={{
+          padding: "2px 8px",
+          fontSize: 11,
+          color: "var(--error)",
+          borderColor: "var(--error)",
+        }}
+        title="Delete"
+      >
+        ×
+      </button>
     </div>
   );
 }

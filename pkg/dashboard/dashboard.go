@@ -130,7 +130,36 @@ type Options struct {
 	// host application has live providers configured. Set explicitly when
 	// the playground should hit real backends.
 	PlaygroundProviders types.ProviderRegistry
+
+	// PlaygroundPreExecute, when non-nil, is invoked right before the
+	// playground builds its execution context. The hook receives the
+	// request the playground was about to run and may return a modified
+	// copy (e.g. a rewritten Flow or Sub) plus a decorated context the
+	// running flow's handlers will see.
+	//
+	// Use this to apply request-time overrides that would normally fire
+	// in the host's middleware chain — which the playground bypasses,
+	// because it constructs the execution context from the POST body
+	// directly. Jigsaw stays agnostic about what the hook does; the host
+	// owns all semantics.
+	PlaygroundPreExecute PlaygroundPreExecute
 }
+
+// PlaygroundRequest is what the playground knows about a run when it
+// calls Options.PlaygroundPreExecute. Hooks may mutate any field and
+// return a modified copy.
+type PlaygroundRequest struct {
+	Flow    string
+	Sub     int
+	Headers map[string]string
+	Inputs  map[string]any
+}
+
+// PlaygroundPreExecute is the host hook signature. It returns the
+// possibly-modified request, a possibly-decorated context (return ctx
+// unchanged to keep the original), and any error that should abort the
+// playground run.
+type PlaygroundPreExecute func(ctx context.Context, req PlaygroundRequest) (PlaygroundRequest, context.Context, error)
 
 // PlaygroundModeReal reports whether the playground should use the host
 // engine's real handlers. Centralised so handlers and tests share the

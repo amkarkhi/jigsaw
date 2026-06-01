@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import yaml from "js-yaml";
 import { api, EndpointSummary, FlowSummary } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
@@ -107,6 +108,15 @@ function EndpointCard({ ep, onChanged }: { ep: EndpointSummary; onChanged: () =>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div className="meta">{ep.name}</div>
+          {ep.flows.length > 0 && (
+            <Link
+              className="btn"
+              to={`/playground?endpoint=${encodeURIComponent(ep.name)}&sub=${ep.flows[0].sub}`}
+              title="Test this endpoint in the playground"
+            >
+              Test
+            </Link>
+          )}
           <button className="btn" disabled={busy} onClick={() => setAddOpen(true)}>+ Flow</button>
         </div>
       </div>

@@ -76,10 +76,14 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 	taskExec.Inputs = inputs
 
 	// Params start from the task definition; the flow's TaskRef may override
-	// individual keys (shallow merge, ref wins).
-	params := make(map[string]any, len(resolvedTask.Params)+len(ref.Params))
+	// individual keys (shallow merge, ref wins). A host-installed
+	// ParamOverlay (attached to the request context by a FlowResolver or
+	// playground hook) is the final, highest-priority layer.
+	overlay := types.ParamOverlayForTask(execCtx.Context, task.Name)
+	params := make(map[string]any, len(resolvedTask.Params)+len(ref.Params)+len(overlay))
 	maps.Copy(params, resolvedTask.Params)
 	maps.Copy(params, ref.Params)
+	maps.Copy(params, overlay)
 	taskExec.Params = params
 
 	var outputs map[string]any

@@ -31,6 +31,7 @@ type Server struct {
 	httpServer       *http.Server
 	mu               sync.RWMutex
 	hotReload        bool
+	flowResolver     FlowResolver
 }
 
 // Options for server configuration
@@ -43,6 +44,47 @@ type Options struct {
 	// and logging middleware, but before route registration. Hosts use this
 	// to inject auth, rate limiting, tracing, etc.
 	Middleware []gin.HandlerFunc
+
+	// FlowResolver, when set, is invoked between the static `sub →
+	// flow` lookup and the engine call. It lets the host override
+	// which flow runs, mutate the request context (e.g. attach a
+	// matched rule), and supply a per-task parameter overlay. Nil =
+	// static-map-only routing, jigsaw's original behaviour.
+	FlowResolver FlowResolver
+}
+
+// FlowResolver is the host hook that decides which flow actually runs
+// for a request. Implementations should be fast (it runs on every
+// request) and concurrency-safe.
+type FlowResolver func(ctx context.Context, req FlowResolveRequest) (FlowResolveResponse, error)
+
+// FlowResolveRequest carries everything jigsaw knows about an incoming
+// request after the static lookup has picked a default flow.
+type FlowResolveRequest struct {
+	Endpoint *types.Endpoint
+	Sub      int
+	Headers  map[string]string
+	Params   map[string]any
+	Default  *types.Flow
+}
+
+// FlowResolveResponse describes how the host wants the request to run.
+// All fields are optional; zero values mean "keep what jigsaw picked."
+type FlowResolveResponse struct {
+	// Flow, when non-nil, replaces the default flow.
+	Flow *types.Flow
+	// Sub, when non-zero, replaces the request's sub for downstream
+	// logging and ctx attachment (does NOT change the dispatched
+	// flow — Flow does that). Use this when the host's policy maps
+	// sub to a canonical backend identifier.
+	Sub int
+	// Context, when non-nil, replaces the request context. Hosts use
+	// this to attach matched rules or audit metadata that handlers
+	// can read.
+	Context context.Context
+	// ParamOverlay, when non-nil, is applied as the final layer when
+	// jigsaw computes each task's params. See types.WithParamOverlay.
+	ParamOverlay types.ParamOverlay
 }
 
 // New creates a new server instance
@@ -76,6 +118,7 @@ func New(cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 		logger:           logger,
 		config:           cfg,
 		hotReload:        opts.HotReload,
+		flowResolver:     opts.FlowResolver,
 	}
 	
 	// Setup Gin
@@ -117,6 +160,7 @@ func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *type
 		logger:           logger,
 		config:           cfg,
 		hotReload:        opts.HotReload,
+		flowResolver:     opts.FlowResolver,
 	}
 	
 	// Setup Gin
@@ -316,10 +360,45 @@ func (s *Server) createEndpointHandler(endpoint *types.Endpoint) gin.HandlerFunc
 				headers[key] = values[0]
 			}
 		}
-		
+
+		// Give the host (if it installed a FlowResolver) a chance to
+		// override the routed flow, decorate the context, and attach
+		// a per-task parameter overlay. The static map's pick is the
+		// input default; the resolver's response is the source of
+		// truth from here on.
+		ctx := c.Request.Context()
+		if s.flowResolver != nil {
+			resp, rerr := s.flowResolver(ctx, FlowResolveRequest{
+				Endpoint: endpoint,
+				Sub:      sub,
+				Headers:  headers,
+				Params:   params,
+				Default:  flow,
+			})
+			if rerr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status": "error",
+					"error":  rerr.Error(),
+				})
+				return
+			}
+			if resp.Flow != nil {
+				flow = resp.Flow
+			}
+			if resp.Sub != 0 {
+				sub = resp.Sub
+			}
+			if resp.Context != nil {
+				ctx = resp.Context
+			}
+			if resp.ParamOverlay != nil {
+				ctx = types.WithParamOverlay(ctx, resp.ParamOverlay)
+			}
+		}
+
 		// Execute flow
 		result, err := s.engine.ExecuteFlow(
-			c.Request.Context(),
+			ctx,
 			flow.Name,
 			sub,
 			params,
