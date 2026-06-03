@@ -48,12 +48,11 @@ func tuiCmd() *cobra.Command {
 				return fmt.Errorf("invalid configuration: %w", err)
 			}
 
-			// Create engine to get logic registry
+			// Create engine — TUI uses it to execute flows/tasks/logic.
 			eng := engine.New(cfg, val, log)
-			logicRegistry := eng.ListLogicHandlers()
 
 			// Create TUI
-			tui := ui.NewTUI(cfg, logicRegistry)
+			tui := ui.NewTUI(cfg, eng, log)
 
 			// Run TUI
 			p := tea.NewProgram(tui, tea.WithAltScreen())
