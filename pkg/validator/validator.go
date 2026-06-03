@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/rs/zerolog"
 )
@@ -23,6 +24,12 @@ func New(logger zerolog.Logger) *Validator {
 // ValidateConfig validates the entire configuration.
 func (v *Validator) ValidateConfig(config *types.Config) error {
 	v.logger.Info().Msg("Validating configuration")
+
+	for name, p := range config.Providers {
+		if err := v.validateProvider(p); err != nil {
+			return fmt.Errorf("invalid provider %q: %w", name, err)
+		}
+	}
 
 	for name, task := range config.Tasks {
 		if err := v.validateTask(task); err != nil {
@@ -47,6 +54,20 @@ func (v *Validator) ValidateConfig(config *types.Config) error {
 	}
 
 	v.logger.Info().Msg("Configuration validation successful")
+	return nil
+}
+
+// validateProvider validates a single provider configuration.
+func (v *Validator) validateProvider(p *types.Provider) error {
+	if p.Name == "" {
+		return fmt.Errorf("provider name cannot be empty")
+	}
+	if p.Type == "" {
+		return fmt.Errorf("provider type cannot be empty")
+	}
+	if !provider.IsRegisteredType(p.Type) {
+		return fmt.Errorf("unknown provider type %q; registered types: %v", p.Type, provider.RegisteredTypes())
+	}
 	return nil
 }
 

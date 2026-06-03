@@ -15,7 +15,7 @@ providers:
       description: "Primary database"
 
   - name: search_engine
-    type: search_engine
+    type: database
     config:
       hosts:
         - http://localhost:9200
@@ -27,7 +27,7 @@ providers:
       description: "Primary search engine"
 
   - name: search_fallback
-    type: search_engine
+    type: database
     config:
       host: localhost
       port: 6333

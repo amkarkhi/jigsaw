@@ -295,6 +295,7 @@ export const api = {
     ),
   providers: () => get<ProviderSummary[]>("/api/providers"),
   provider: (name: string) => get<ProviderDetail>(`/api/providers?name=${encodeURIComponent(name)}`),
+  providerTypes: () => get<string[]>("/api/provider-types"),
   endpoints: () => get<EndpointSummary[]>("/api/endpoints"),
   logic: () => get<LogicResponse>("/api/logic"),
   diagnostics: () => get<Diagnostic[]>("/api/diagnostics"),

@@ -1,6 +1,6 @@
 providers:
   - name: cache
-    type: cache
+    type: database
     version: "1.0.0"
     config:
       host: localhost

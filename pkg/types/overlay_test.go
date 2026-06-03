@@ -10,11 +10,12 @@ func TestParamOverlay_NilCtxAndOverlay(t *testing.T) {
 	// nil-safety, and callers in the wild may pre-allocate hooks
 	// before the request ctx exists.
 	//lint:ignore SA1012 testing documented nil-safety contract
-	if got := ParamOverlayFrom(nil); got != nil {
+	nilctx := context.TODO()
+	if got := ParamOverlayFrom(nilctx); got != nil {
 		t.Errorf("ParamOverlayFrom(nil) = %v, want nil", got)
 	}
 	//lint:ignore SA1012 testing documented nil-safety contract
-	if got := ParamOverlayForTask(nil, "x"); got != nil {
+	if got := ParamOverlayForTask(nilctx, "x"); got != nil {
 		t.Errorf("ParamOverlayForTask(nil, …) = %v, want nil", got)
 	}
 	ctx := context.Background()
@@ -25,7 +26,7 @@ func TestParamOverlay_NilCtxAndOverlay(t *testing.T) {
 
 func TestParamOverlay_WithAndForTask(t *testing.T) {
 	overlay := ParamOverlay{
-		"":        {"eligible": true, "shared": "wildcard"},
+		"":            {"eligible": true, "shared": "wildcard"},
 		"image_check": {"eligible": false, "specific": 1},
 	}
 	ctx := WithParamOverlay(context.Background(), overlay)

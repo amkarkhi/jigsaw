@@ -1,6 +1,6 @@
 providers:
   - name: cache
-    type: cache
+    type: database
     config:
       host: localhost
       port: 6379

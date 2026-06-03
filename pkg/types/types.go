@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -21,11 +22,11 @@ type Config struct {
 
 // Endpoint defines an HTTP route that maps to flows
 type Endpoint struct {
-	Name        string         `yaml:"name" json:"name"`
-	Path        string         `yaml:"path" json:"path"`
-	Method      string         `yaml:"method" json:"method"`
-	Description string         `yaml:"description" json:"description,omitempty"`
-	Flows       []FlowMapping  `yaml:"flows" json:"flows"`
+	Name        string        `yaml:"name" json:"name"`
+	Path        string        `yaml:"path" json:"path"`
+	Method      string        `yaml:"method" json:"method"`
+	Description string        `yaml:"description" json:"description,omitempty"`
+	Flows       []FlowMapping `yaml:"flows" json:"flows"`
 	// RequestParams declares the scope keys that the HTTP layer will seed into
 	// the execution context before the flow runs (path / query / header / body
 	// parameters). The flow validator uses this list to pre-populate its
@@ -111,12 +112,7 @@ func (b *Bind) IsSkipped(field string) bool {
 	if b == nil {
 		return false
 	}
-	for _, name := range b.Skip {
-		if name == field {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(b.Skip, field)
 }
 
 // InMap returns the In map, or nil when b is nil.
@@ -251,20 +247,20 @@ type ScopedVar struct {
 // branches, use context.Fork (pkg/context) to obtain a branch-local copy;
 // never share a single ExecutionContext across goroutines.
 type ExecutionContext struct {
-	RequestID   string            // Unique request identifier
-	FlowName    string            // Current flow name
-	FlowVersion string            // Version of the flow being executed
-	CurrentTask string            // Current task name
-	Sub         int               // Sub parameter (flow selector)
-	Tag         string            // Tag for task overrides
-	Parameters  map[string]any    // Request parameters
-	Headers     map[string]string // HTTP headers
+	RequestID   string               // Unique request identifier
+	FlowName    string               // Current flow name
+	FlowVersion string               // Version of the flow being executed
+	CurrentTask string               // Current task name
+	Sub         int                  // Sub parameter (flow selector)
+	Tag         string               // Tag for task overrides
+	Parameters  map[string]any       // Request parameters
+	Headers     map[string]string    // HTTP headers
 	Scope       map[string]ScopedVar // Flat execution scope; keyed by variable name
-	Metadata    map[string]any    // Additional runtime metadata
-	Versions    map[string]string // Version tracking: task_name -> version
-	Providers   ProviderRegistry  // Provider registry interface
-	Logger      zerolog.Logger    // Structured logger (zerolog, by value)
-	Context     context.Context   // Go context for cancellation
+	Metadata    map[string]any       // Additional runtime metadata
+	Versions    map[string]string    // Version tracking: task_name -> version
+	Providers   ProviderRegistry     // Provider registry interface
+	Logger      zerolog.Logger       // Structured logger (zerolog, by value)
+	Context     context.Context      // Go context for cancellation
 
 	// Engine exposes the running engine to logic handlers so they can dispatch
 	// other registered logics by name (e.g. cache wrappers). Populated by

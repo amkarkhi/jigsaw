@@ -127,12 +127,27 @@ func (r *Registry) initLazy(name string, config *types.Provider) (types.Provider
 		return instance, nil
 	}
 	
-	instance := NewBaseProvider(config, r.logger)
+	instance, err := r.buildInstance(config)
+	if err != nil {
+		return nil, err
+	}
 	r.providers[name] = instance
-	
+
 	r.logger.Debug().Str("provider", name).Str("type", config.Type).Msg("Lazy provider initialized")
-	
+
 	return instance, nil
+}
+
+// buildInstance dispatches to a registered factory, falling back to
+// BaseProvider when no factory is registered for the type. The validator
+// rejects configs with unknown types, so the fallback is mainly defensive
+// — e.g. runtime stub providers that bypass config loading.
+func (r *Registry) buildInstance(config *types.Provider) (types.ProviderInstance, error) {
+	if f := LookupFactory(config.Type); f != nil {
+		return f(config, r.logger)
+	}
+	r.logger.Warn().Str("provider", config.Name).Str("type", config.Type).Msg("No factory registered for provider type; using placeholder")
+	return NewBaseProvider(config, r.logger), nil
 }
 
 // initEager creates and connects a provider immediately
@@ -145,8 +160,11 @@ func (r *Registry) initEager(name string, config *types.Provider) (types.Provide
 		return instance, nil
 	}
 	
-	instance := NewBaseProvider(config, r.logger)
-	
+	instance, err := r.buildInstance(config)
+	if err != nil {
+		return nil, err
+	}
+
 	// Connect immediately for eager/pooled mode
 	if err := instance.Connect(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to connect provider %s: %w", name, err)

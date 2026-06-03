@@ -7,6 +7,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/configlang"
+	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/symbols"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 )
@@ -17,6 +18,7 @@ func (d *Dashboard) routes() {
 	d.mux.HandleFunc("/api/flows", d.handleFlows)
 	d.mux.HandleFunc("/api/tasks", d.handleTasks)
 	d.mux.HandleFunc("/api/providers", d.handleProviders)
+	d.mux.HandleFunc("/api/provider-types", d.handleProviderTypes)
 	d.mux.HandleFunc("/api/endpoints", d.handleEndpoints)
 	d.mux.HandleFunc("/api/logic", d.handleLogic)
 	d.mux.HandleFunc("/api/diagnostics", d.handleDiagnostics)
@@ -175,6 +177,13 @@ func (d *Dashboard) handleTasks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 	}
 	writeJSON(w, out)
+}
+
+// handleProviderTypes returns the list of provider types with a registered
+// factory. The Web UI uses this to populate the "type" dropdown so that
+// host-registered custom types show up alongside the built-ins.
+func (d *Dashboard) handleProviderTypes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, provider.RegisteredTypes())
 }
 
 func (d *Dashboard) handleProviders(w http.ResponseWriter, r *http.Request) {

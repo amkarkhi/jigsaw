@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import yaml from "js-yaml";
 import { api } from "../api/client";
@@ -113,8 +113,25 @@ function NewProviderModal({
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState("cache");
+  const [registeredTypes, setRegisteredTypes] = useState<string[]>([]);
+  const [type, setType] = useState("database");
   const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    api.providerTypes()
+      .then((ts) => {
+        setRegisteredTypes(ts);
+        if (ts.length > 0 && !ts.includes(type)) {
+          setType(ts[0]);
+        }
+      })
+      .catch(() => {
+        // Endpoint missing or backend not running — fall back to a single
+        // sensible default so the form still works.
+        setRegisteredTypes(["database", "api_call"]);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [initMode, setInitMode] = useState("lazy");
   const [poolSize, setPoolSize] = useState<number | "">("");
   const [configText, setConfigText] = useState("host: localhost\nport: 6379\n");
@@ -201,12 +218,9 @@ function NewProviderModal({
 
           <label className="meta">type *</label>
           <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
-            <option value="cache">cache</option>
-            <option value="database">database</option>
-            <option value="search_engine">search_engine</option>
-            <option value="vector_db">vector_db</option>
-            <option value="http">http</option>
-            <option value="custom">custom</option>
+            {registeredTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
           </select>
 
           <label className="meta">version</label>
@@ -253,13 +267,13 @@ function NewProviderModal({
   );
 }
 
+// typeColor picks a stable color per type name so cards stay visually
+// distinct as users register their own provider types. Hash → HSL gives
+// well-separated hues without a hardcoded palette.
 function typeColor(t: string): string {
-  switch (t) {
-    case "cache":         return "#7cf0c7";
-    case "database":      return "#f0c977";
-    case "search_engine": return "#a07cf0";
-    case "vector_db":     return "#f08383";
-    case "http":          return "#7c9cf0";
-    default:              return "var(--text-dim)";
+  let h = 0;
+  for (let i = 0; i < t.length; i++) {
+    h = (h * 31 + t.charCodeAt(i)) >>> 0;
   }
+  return `hsl(${h % 360}, 60%, 70%)`;
 }

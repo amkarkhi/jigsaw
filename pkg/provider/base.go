@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -41,30 +40,15 @@ func (b *BaseProvider) Connect(ctx context.Context) error {
 		return nil
 	}
 	
-	b.logger.Info().Str("type", b.provider.Type).Msg("Connecting to provider")
-	
-	// Placeholder for actual connection logic
-	// In real implementation, this would:
-	// - Create cache client for cache type
-	// - Create database connection for database type
-	// - Create HTTP client for http type
-	// - etc.
-	
-	switch b.provider.Type {
-	case "cache":
-		b.connection = b.connectCache(ctx)
-	case "database":
-		b.connection = b.connectDatabase(ctx)
-	case "search_engine":
-		b.connection = b.connectSearchEngine(ctx)
-	case "http":
-		b.connection = b.connectHTTP(ctx)
-	default:
-		b.connection = map[string]any{
-			"type":   b.provider.Type,
-			"config": b.provider.Config,
-			"status": "mock_connected",
-		}
+	b.logger.Info().Str("type", b.provider.Type).Msg("Connecting to provider (placeholder)")
+
+	// BaseProvider is a generic placeholder. Real connection logic lives
+	// in factories registered via provider.RegisterFactory; host programs
+	// override the built-ins at startup.
+	b.connection = map[string]any{
+		"type":   b.provider.Type,
+		"config": b.provider.Config,
+		"status": "placeholder",
 	}
 	
 	b.connected = true
@@ -117,42 +101,3 @@ func (b *BaseProvider) GetProvider() *types.Provider {
 	return b.provider
 }
 
-// =====================================================================
-// PLACEHOLDER CONNECTION METHODS
-// These will be implemented in separate files when needed
-// =====================================================================
-
-func (b *BaseProvider) connectCache(ctx context.Context) any {
-	b.logger.Debug().Interface("config", b.provider.Config).Msg("Cache provider connection placeholder")
-	
-	// TODO: Implement actual cache connection
-	// return cache.NewClient(&cache.Options{...})
-	
-	return fmt.Sprintf("cache_connection_placeholder_%s", b.provider.Name)
-}
-
-func (b *BaseProvider) connectDatabase(ctx context.Context) any {
-	b.logger.Debug().Str("type", b.provider.Type).Interface("config", b.provider.Config).Msg("Database provider connection placeholder")
-	
-	// TODO: Implement actual database connection
-	// return sql.Open(...)
-	
-	return fmt.Sprintf("database_connection_placeholder_%s", b.provider.Name)
-}
-
-func (b *BaseProvider) connectSearchEngine(ctx context.Context) any {
-	b.logger.Debug().Str("type", b.provider.Type).Interface("config", b.provider.Config).Msg("Search engine provider connection placeholder")
-	
-	// TODO: Implement actual search engine connection
-	
-	return fmt.Sprintf("search_connection_placeholder_%s", b.provider.Name)
-}
-
-func (b *BaseProvider) connectHTTP(ctx context.Context) any {
-	b.logger.Debug().Interface("config", b.provider.Config).Msg("HTTP provider connection placeholder")
-	
-	// TODO: Implement actual HTTP client
-	// return &http.Client{...}
-	
-	return fmt.Sprintf("http_connection_placeholder_%s", b.provider.Name)
-}
