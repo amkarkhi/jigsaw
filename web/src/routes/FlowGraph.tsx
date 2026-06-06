@@ -1080,9 +1080,9 @@ function FlowGraphInner() {
             // — including from the YAML editor side-panel. Disable it; users
             // pan by drag-on-canvas anyway.
             panActivationKeyCode={null}
-            selectionKeyCode={null}
+            selectionKeyCode="Shift"
             zoomActivationKeyCode={null}
-            multiSelectionKeyCode={null}
+            multiSelectionKeyCode={["Shift", "Meta", "Control"]}
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={16} color="#1f2530" />
