@@ -339,10 +339,21 @@ func (s *Server) createEndpointHandler(endpoint *types.Endpoint) gin.HandlerFunc
 	// Extract parameters
 	params := make(map[string]any)
 	
-	// Query parameters
+	// Query parameters. Repeated keys (e.g. ?facets=a&facets=b) are kept as
+	// a []any so downstream handlers can read every value; single-value
+	// keys stay as plain strings for backwards compatibility.
 	for key, values := range c.Request.URL.Query() {
-		if len(values) > 0 {
+		switch len(values) {
+		case 0:
+			// skip
+		case 1:
 			params[key] = values[0]
+		default:
+			anyVals := make([]any, len(values))
+			for i, v := range values {
+				anyVals[i] = v
+			}
+			params[key] = anyVals
 		}
 	}
 	
