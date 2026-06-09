@@ -58,10 +58,18 @@ func (t *TaskExecutor) Execute(execCtx *types.ExecutionContext, task *types.Task
 		execCtx.Versions[fmt.Sprintf("task:%s", task.Name)] = taskExec.TaskVersion
 	}
 
-	// Check if this task has a wrapper. If so, we execute the wrapper instead,
-	// with ctx.Nested pointing to this task so the wrapper can invoke it.
-	if resolvedTask.Wrapper != nil && resolvedTask.Wrapper.Task != "" {
-		return t.executeWithWrapper(execCtx, resolvedTask, ref, taskExec)
+	// Wrapper resolution (composition rule):
+	//   * ref.Wrapper (flow-step) is the OUTER wrapper.
+	//   * task.Wrapper is the INNER wrapper.
+	// When both are set they both run: the outer wrapper invokes the task via
+	// ctx.Engine.InvokeTask, which re-enters wrapper handling for task.Wrapper.
+	// When only one is set, it runs alone.
+	outerWrapper := ref.Wrapper
+	if outerWrapper == nil || outerWrapper.Task == "" {
+		outerWrapper = resolvedTask.Wrapper
+	}
+	if outerWrapper != nil && outerWrapper.Task != "" {
+		return t.executeWithWrapper(execCtx, resolvedTask, ref, taskExec, outerWrapper)
 	}
 
 	t.logger.Debug().Str("task", task.Name).Str("version", resolvedTask.Version).Str("provider", resolvedTask.Provider).Str("logic", resolvedTask.Logic).Msg("Executing task")
@@ -359,8 +367,8 @@ func (t *TaskExecutor) executeWithWrapper(
 	originalTask *types.Task,
 	ref types.TaskRef,
 	taskExec *types.TaskExecution,
+	wrapper *types.WrapperRef,
 ) (*types.TaskExecution, error) {
-	wrapper := originalTask.Wrapper
 	if wrapper == nil || wrapper.Task == "" {
 		return nil, fmt.Errorf("executeWithWrapper called but wrapper is nil or empty")
 	}

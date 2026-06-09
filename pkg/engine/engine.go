@@ -276,6 +276,13 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 		inputs = map[string]any{}
 	}
 
+	// Detect whether the caller is already a wrapper currently wrapping THIS
+	// task — in that case we must NOT re-apply task.Wrapper, or the wrapper
+	// would recurse into itself. The pre-existing `ctx.Nested.Task == name`
+	// signal is exactly that marker: it's set by executeWithWrapper /
+	// invokeTaskThroughWrapper before handing control to the wrapper logic.
+	alreadyWrappedByCaller := ctx.Nested != nil && ctx.Nested.Task == name
+
 	// Clear ctx.Nested while the inner runs: ctx.Nested is meaningful only to
 	// the wrapper logic that asked us to dispatch this task. The inner
 	// shouldn't see its wrapper's Nested. Restore on return so the wrapper
@@ -284,10 +291,64 @@ func (e *Engine) InvokeTask(ctx *types.ExecutionContext, name string, inputs map
 	ctx.Nested = nil
 	defer func() { ctx.Nested = prevNested }()
 
+	// Wrapper composition: if the dispatched inner task itself declares a
+	// Wrapper AND the caller isn't already wrapping us, run *its* wrapper
+	// around the actual logic. This is what makes a flow-step wrapper + task
+	// wrapper compose — the outer wrapper calls InvokeTask, and here we
+	// re-apply the inner task's own wrapper.
+	if !alreadyWrappedByCaller && resolved.Wrapper != nil && resolved.Wrapper.Task != "" {
+		return e.invokeTaskThroughWrapper(ctx, exec, resolved, resolved.Wrapper, inputs, params)
+	}
+
 	if resolved.Provider != "" {
 		return exec.executeWithProvider(ctx, resolved, inputs, params)
 	}
 	return exec.executeLogic(ctx, resolved, inputs, params)
+}
+
+// invokeTaskThroughWrapper dispatches an inner task via its declared Wrapper.
+// Mirrors TaskExecutor.executeWithWrapper but skips bind I/O (InvokeTask is
+// raw-map-in / raw-map-out) so it composes cleanly when a wrapper logic calls
+// ctx.Engine.InvokeTask on a task that itself has a Wrapper.
+func (e *Engine) invokeTaskThroughWrapper(
+	ctx *types.ExecutionContext,
+	exec *TaskExecutor,
+	innerTask *types.Task,
+	wrapper *types.WrapperRef,
+	inputs map[string]any,
+	innerParams map[string]any,
+) (map[string]any, error) {
+	wrapperTask, ok := e.config.Tasks[wrapper.Task]
+	if !ok {
+		return nil, fmt.Errorf("wrapper task %q not found for task %q", wrapper.Task, innerTask.Name)
+	}
+	resolvedWrapper, err := exec.resolveTaskInheritance(wrapperTask)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrapper params: wrapper defaults, then inner task defaults, then the
+	// wrapper ref's own params, then the inner params already resolved by the
+	// caller (flow ref + overrides). Matches executeWithWrapper layering.
+	params := make(map[string]any, len(resolvedWrapper.Params)+len(innerTask.Params)+len(wrapper.Params)+len(innerParams))
+	maps.Copy(params, resolvedWrapper.Params)
+	maps.Copy(params, innerTask.Params)
+	if wrapper.Params != nil {
+		maps.Copy(params, wrapper.Params)
+	}
+	maps.Copy(params, innerParams)
+
+	prevNested := ctx.Nested
+	ctx.Nested = &types.WrapperRef{
+		Task:   innerTask.Name,
+		Params: innerParams,
+	}
+	defer func() { ctx.Nested = prevNested }()
+
+	if resolvedWrapper.Provider != "" {
+		return exec.executeWithProvider(ctx, resolvedWrapper, inputs, params)
+	}
+	return exec.executeLogic(ctx, resolvedWrapper, inputs, params)
 }
 
 // ListTasks returns all available tasks.

@@ -63,6 +63,10 @@ type TaskRef struct {
 	// flow only. Shallow merge: ref keys win, unspecified keys fall through to
 	// the task definition.
 	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+	// Wrapper attaches a wrapper to this flow step. It composes with any
+	// Task.Wrapper declared on the underlying task: the ref wrapper is the
+	// outer wrap, the task wrapper is the inner. Both run; neither overrides.
+	Wrapper *WrapperRef `yaml:"wrapper,omitempty" json:"wrapper,omitempty"`
 }
 
 // WrapperRef points at another task that wraps the execution of the task
