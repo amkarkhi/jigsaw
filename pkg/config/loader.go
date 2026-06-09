@@ -205,6 +205,10 @@ func (l *Loader) loadTasks(tasksPath string, config *types.Config) error {
 			return fmt.Errorf("failed to read %s: %w", path, err)
 		}
 
+		if err := checkSchemaVersion(path, data); err != nil {
+			return err
+		}
+
 		var taskFile struct {
 			Tasks []rawTask `yaml:"tasks"`
 		}
@@ -378,6 +382,10 @@ func (l *Loader) loadFlows(flowsPath string, config *types.Config) error {
 			return fmt.Errorf("failed to read %s: %w", path, err)
 		}
 
+		if err := checkSchemaVersion(path, data); err != nil {
+			return err
+		}
+
 		var ff rawFlowFile
 		if err := yaml.Unmarshal(data, &ff); err != nil {
 			return fmt.Errorf("failed to parse %s: %w", path, err)
@@ -416,6 +424,10 @@ func (l *Loader) loadProviders(providersPath string, config *types.Config) error
 			return fmt.Errorf("failed to read %s: %w", path, err)
 		}
 
+		if err := checkSchemaVersion(path, data); err != nil {
+			return err
+		}
+
 		var providerFile struct {
 			Providers []types.Provider `yaml:"providers"`
 		}
@@ -451,6 +463,10 @@ func (l *Loader) loadEndpoints(endpointsPath string, config *types.Config) error
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to read %s: %w", path, err)
+		}
+
+		if err := checkSchemaVersion(path, data); err != nil {
+			return err
 		}
 
 		var endpointFile struct {
