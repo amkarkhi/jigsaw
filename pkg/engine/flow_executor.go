@@ -196,12 +196,12 @@ func (f *FlowExecutor) executeParallel(
 	for i, branch := range block.Branches {
 		i, branch := i, branch
 
-		branchGoCtx := gctx
-		if branch.Timeout > 0 {
-			var bcancel stdctx.CancelFunc
-			branchGoCtx, bcancel = stdctx.WithTimeout(gctx, time.Duration(branch.Timeout)*time.Millisecond)
-			defer bcancel()
-		}
+		// Per-branch timeout is owned by the branch goroutine so its cancel
+		// fires when the branch returns, not when executeParallel returns.
+		// Previously a deferred bcancel() in this loop body kept the timeout
+		// timer alive until the whole parallel block finished, leaking
+		// goroutines/timers and skewing trace spans.
+		branchGoCtx, bcancel := branchContext(gctx, branch.Timeout)
 
 		childCtx := jigsawctx.Fork(execCtx, branch.Label, branchGoCtx)
 		branchCtxs[i] = childCtx
@@ -211,6 +211,7 @@ func (f *FlowExecutor) executeParallel(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer bcancel()
 			defer func() {
 				if r := recover(); r != nil {
 					branchErrs[i] = fmt.Errorf("branch %q panicked: %v", branch.Label, r)
@@ -260,6 +261,16 @@ func (f *FlowExecutor) executeParallel(
 		return nil
 	}
 	return classifyParallelErrors(mode, branchErrs, total, minSuccess)
+}
+
+// branchContext returns a per-branch context. When timeoutMs > 0 it derives
+// a WithTimeout child; otherwise it returns the parent unchanged with a
+// no-op cancel so callers can defer unconditionally.
+func branchContext(parent stdctx.Context, timeoutMs int) (stdctx.Context, stdctx.CancelFunc) {
+	if timeoutMs <= 0 {
+		return parent, func() {}
+	}
+	return stdctx.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
 }
 
 // classifyParallelErrors decides whether the parallel block as a whole failed.

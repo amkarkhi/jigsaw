@@ -335,8 +335,17 @@ func MustRegisterWithProvider[I, O, P any](eng *Engine, l ProviderLogic[I, O, P]
 // Internal helpers
 // =====================================================================
 
-// roundTrip marshals src to JSON then unmarshals into dst.
+// roundTrip marshals src to JSON then unmarshals into dst. When both sides
+// are map[string]any (the hot path for handlers like cache_wrapper whose I/O
+// is schemaless) the JSON round trip is skipped — JSON marshal+unmarshal
+// would otherwise dominate per-task CPU on flows with many tasks.
 func roundTrip(src, dst any) error {
+	if m, ok := src.(map[string]any); ok {
+		if d, ok := dst.(*map[string]any); ok {
+			*d = m
+			return nil
+		}
+	}
 	b, err := json.Marshal(src)
 	if err != nil {
 		return err
