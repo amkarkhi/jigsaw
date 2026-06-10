@@ -22,7 +22,7 @@
 // Positions are persisted in a sidecar (.jigsaw/layouts/<flow>.json), kept
 // out of the flow YAML so mouse-driven layout changes don't churn the config.
 
-import { Flow, ParallelBlock, TaskRef } from "./types";
+import { Flow, ParallelBlock, TaskRef, WrapperRef } from "./types";
 
 export interface CanvasNode {
   id: string;
@@ -37,6 +37,9 @@ export interface CanvasNode {
   // matches the current fork depth, so nested parallels round-trip with
   // their user-authored labels preserved at every level.
   branchPath?: string[];
+  // Per-placement wrapper (TaskRef.wrapper). Round-trips through the canvas
+  // so editor changes persist back into the flow YAML.
+  wrapper?: WrapperRef;
   position: { x: number; y: number };
 }
 
@@ -219,6 +222,7 @@ function emitRef(canvas: Canvas, ref: TaskRef, path: string[]): DecompiledChain 
       taskName: ref.name,
       label: ref.label || undefined,
       branchPath: path.length > 0 ? [...path] : undefined,
+      wrapper: ref.wrapper && ref.wrapper.task ? ref.wrapper : undefined,
       position: { x: 0, y: 0 },
     });
     return { entryIds: [id], exitIds: [id] };
@@ -446,6 +450,7 @@ class CompileException extends Error {}
 function makeTaskRef(node: CanvasNode): TaskRef {
   const ref: TaskRef = { name: node.taskName };
   if (node.label) ref.label = node.label;
+  if (node.wrapper && node.wrapper.task) ref.wrapper = node.wrapper;
   return ref;
 }
 

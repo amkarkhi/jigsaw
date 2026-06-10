@@ -83,15 +83,36 @@ func (l *Loader) Watch(configPath string, onChange func(*types.Config)) error {
 	}
 
 	for _, dir := range dirs {
-		if err := l.watcher.Add(dir); err != nil {
+		if err := l.addWatchRecursive(dir); err != nil {
 			l.logger.Warn().Str("dir", dir).Err(err).Msg("Failed to watch directory")
-		} else {
-			l.logger.Info().Str("dir", dir).Msg("Watching directory for changes")
 		}
 	}
 
 	go l.watchLoop(onChange)
 	return nil
+}
+
+// addWatchRecursive walks dir and registers every subdirectory with the
+// watcher. fsnotify does not recurse on its own, so configs organized into
+// subfolders would otherwise reload only when the top-level dir changes.
+func (l *Loader) addWatchRecursive(dir string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		if err := l.watcher.Add(path); err != nil {
+			l.logger.Warn().Str("dir", path).Err(err).Msg("Failed to watch directory")
+			return nil
+		}
+		l.logger.Info().Str("dir", path).Msg("Watching directory for changes")
+		return nil
+	})
 }
 
 // watchLoop handles file system events.
@@ -102,8 +123,18 @@ func (l *Loader) watchLoop(onChange func(*types.Config)) {
 			if !ok {
 				return
 			}
-			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove) != 0 {
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
 				l.logger.Info().Str("file", event.Name).Str("op", event.Op.String()).Msg("Configuration file changed")
+
+				// If a new directory appeared (e.g. user added a subfolder of
+				// flows), pick it up so future edits inside it are observed.
+				if event.Op&fsnotify.Create != 0 {
+					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+						if err := l.addWatchRecursive(event.Name); err != nil {
+							l.logger.Warn().Str("dir", event.Name).Err(err).Msg("Failed to watch new directory")
+						}
+					}
+				}
 
 				l.mu.RLock()
 				configPath := l.configPath

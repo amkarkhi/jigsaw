@@ -69,10 +69,14 @@ interface NodeData {
   // Full chain of enclosing parallel-branch labels, outermost first.
   // Rendered as a single dotted path chip on the node.
   branchPath?: string[];
-  // Name of the wrapper task that intercepts this task's execution
-  // (Task.Wrapper.Task in YAML, surfaced via TaskSummary.wrapped_by).
-  // When set, the node renders inside a dashed container labelled with
-  // the wrapper. Read-only signal — editing happens in the side panel.
+  // Per-placement wrapper override (TaskRef.wrapper). When set, takes
+  // precedence over the task-level wrapper at runtime and in the graph.
+  // Persisted back into the flow YAML on save.
+  refWrapper?: { task: string; params?: Record<string, unknown> };
+  // Name of the wrapper task that intercepts this task's execution. Computed
+  // from refWrapper if set, otherwise from the task-level wrapper surfaced
+  // via TaskSummary.wrapped_by. When set, the node renders inside a dashed
+  // container labelled with the wrapper.
   wrappedBy?: string;
   selected: boolean;
   isStart: boolean;
@@ -366,7 +370,9 @@ function FlowGraphInner() {
             hasError: validation.problemNodes.has(n.id),
             hasWarning: validation.warnNodes.has(n.id) && !validation.problemNodes.has(n.id),
             issues: issuesByNode[n.id],
-            wrappedBy: wrappedByTaskName[d.taskName],
+            // Per-step wrapper wins over the task-level default, matching
+            // the runtime resolution rule in task_executor.go.
+            wrappedBy: d.refWrapper?.task || wrappedByTaskName[d.taskName],
           },
         };
       }),
@@ -2979,6 +2985,7 @@ function canvasToRFNodes(c: Canvas): Node<NodeData>[] {
       taskName: n.taskName,
       label: n.label,
       branchPath: n.branchPath,
+      refWrapper: n.wrapper,
       selected: false,
       isStart: false,
       isEnd: false,
@@ -3003,6 +3010,7 @@ function rfToCanvas(nodes: Node<NodeData>[], edges: Edge[]): Canvas {
       taskName: n.data.taskName,
       label: n.data.label,
       branchPath: n.data.branchPath,
+      wrapper: n.data.refWrapper,
       position: { x: n.position.x, y: n.position.y },
     })),
     edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),

@@ -23,6 +23,16 @@ export interface TaskRef {
   // params at execution time (ref keys win). Used e.g. by generic wrapper
   // tasks like `cached_call` to pick the inner logic per flow.
   params?: Record<string, unknown>;
+  // Per-placement wrapper override. When set, this wrapper runs instead of
+  // (or composed with) the task-level wrapper at runtime. Surfaced in the
+  // graph so the editor can render the dashed container around the node
+  // and persist edits back into the flow YAML.
+  wrapper?: WrapperRef;
+}
+
+export interface WrapperRef {
+  task: string;
+  params?: Record<string, unknown>;
 }
 
 export interface ParallelBlock {
