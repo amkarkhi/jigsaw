@@ -10,70 +10,53 @@ import (
 // over every flow in the config. It must be called after all handlers are
 // registered (see Engine.ValidateFlows).
 //
-// The simulated scope for each flow is pre-seeded with:
-//   - the framework-provided keys "sub" and "tag" (set by Engine.ExecuteFlow);
-//   - every name declared in `request_params` on any endpoint that maps to
-//     this flow.
-//
-// Types for pre-seeded keys are recorded as "" (unknown), so they do not
-// trigger the validator's type-conflict check when a downstream task
-// republishes the same key.
+// For each flow:
+//   - "sub" and "tag" are pre-seeded (set by Engine.ExecuteFlow).
+//   - If the flow is reached by at least one endpoint with a `request_parser`,
+//     the validator can't know which scope keys that parser publishes, so it
+//     suppresses the "input source not in scope" error for required inputs
+//     across the flow. Type-conflict checks on outputs remain active.
 func validateFlows(config *types.Config, registry *logicRegistry) error {
-	flowParams := collectFlowRequestParams(config)
+	lenient := collectParserBackedFlows(config)
 	for flowName, flow := range config.Flows {
 		scope := make(map[string]string) // name → JSON-schema type
 		scope["sub"] = "number"
 		scope["tag"] = "string"
-		for _, name := range flowParams[flowName] {
-			if _, exists := scope[name]; !exists {
-				scope[name] = ""
-			}
-		}
-		if err := validateFlowTasks(flow.Tasks, config, registry, scope); err != nil {
+		if err := validateFlowTasks(flow.Tasks, config, registry, scope, lenient[flowName]); err != nil {
 			return fmt.Errorf("flow %q: %w", flowName, err)
 		}
 	}
 	return nil
 }
 
-// collectFlowRequestParams builds a flow-name → request-param-names map by
-// walking every endpoint and unioning the RequestParams declarations of every
-// FlowMapping that targets each flow.
-func collectFlowRequestParams(config *types.Config) map[string][]string {
-	out := make(map[string][]string)
-	seen := make(map[string]map[string]struct{})
+// collectParserBackedFlows returns the set of flow names that have at least
+// one endpoint mapping with a `request_parser` set.
+func collectParserBackedFlows(config *types.Config) map[string]bool {
+	out := make(map[string]bool)
 	for _, ep := range config.Endpoints {
-		if ep == nil || len(ep.RequestParams) == 0 {
+		if ep == nil || ep.RequestParser == "" {
 			continue
 		}
 		for _, fm := range ep.Flows {
-			set, ok := seen[fm.FlowName]
-			if !ok {
-				set = make(map[string]struct{})
-				seen[fm.FlowName] = set
-			}
-			for _, name := range ep.RequestParams {
-				if _, dup := set[name]; dup {
-					continue
-				}
-				set[name] = struct{}{}
-				out[fm.FlowName] = append(out[fm.FlowName], name)
-			}
+			out[fm.FlowName] = true
 		}
 	}
 	return out
 }
 
 // validateFlowTasks walks a task list simulating scope mutations.
+// When lenientInputs is true, missing required scope sources are not errors —
+// the host's request_parser is expected to provide them at runtime.
 func validateFlowTasks(
 	tasks []types.TaskRef,
 	config *types.Config,
 	registry *logicRegistry,
 	scope map[string]string,
+	lenientInputs bool,
 ) error {
 	for _, ref := range tasks {
 		if ref.Parallel != nil {
-			if err := validateParallelBlock(ref.Parallel, config, registry, scope); err != nil {
+			if err := validateParallelBlock(ref.Parallel, config, registry, scope, lenientInputs); err != nil {
 				return err
 			}
 			continue
@@ -125,8 +108,13 @@ func validateFlowTasks(
 				}
 				scopeKey := ref.Bind.ResolveIn(fieldName)
 				if _, exists := scope[scopeKey]; !exists {
-					if isRequired(inputSchema, fieldName) {
+					if isRequired(inputSchema, fieldName) && !lenientInputs {
 						return fmt.Errorf("task %q: input %q: source %q not in scope at this point in the flow", ref.Name, fieldName, scopeKey)
+					}
+					if lenientInputs {
+						// Pre-seed so downstream tasks reading the same key
+						// don't trip the same check.
+						scope[scopeKey] = ""
 					}
 				}
 			}
@@ -172,6 +160,7 @@ func validateParallelBlock(
 	config *types.Config,
 	registry *logicRegistry,
 	parentScope map[string]string,
+	lenientInputs bool,
 ) error {
 	for _, branch := range block.Branches {
 		// Each branch starts with a copy of the parent scope (read access).
@@ -180,7 +169,7 @@ func validateParallelBlock(
 			branchScope[k] = v
 		}
 
-		if err := validateFlowTasks(branch.Tasks, config, registry, branchScope); err != nil {
+		if err := validateFlowTasks(branch.Tasks, config, registry, branchScope, lenientInputs); err != nil {
 			return fmt.Errorf("branch %q: %w", branch.Label, err)
 		}
 
@@ -220,4 +209,3 @@ func resolveTaskForFlowValidation(task *types.Task, config *types.Config) *types
 	}
 	return cur
 }
-

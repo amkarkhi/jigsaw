@@ -10,6 +10,7 @@ import (
 
 	"github.com/amkarkhi/jigsaw/pkg/config"
 	"github.com/amkarkhi/jigsaw/pkg/engine"
+	"github.com/amkarkhi/jigsaw/pkg/parsers"
 	"github.com/amkarkhi/jigsaw/pkg/provider"
 	"github.com/amkarkhi/jigsaw/pkg/router"
 	"github.com/amkarkhi/jigsaw/pkg/types"
@@ -361,6 +362,36 @@ func (s *Server) createEndpointHandler(endpoint *types.Endpoint) gin.HandlerFunc
 	if body != nil {
 		for k, v := range body {
 			params[k] = v
+		}
+	}
+
+	// Endpoint-level request parser. When the endpoint declares a parser by
+	// name, hand the raw query/body/headers to it and use its output as the
+	// flow's params, replacing the default merge above. This lets a host app
+	// own parameter shaping end-to-end (e.g. normalize multi-value `sort`
+	// into a typed slice) without each task re-doing the work.
+	if endpoint.RequestParser != "" {
+		parser, ok := parsers.Lookup(endpoint.RequestParser)
+		if !ok {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("request_parser %q not registered", endpoint.RequestParser),
+			})
+			return
+		}
+		parsed, perr := parser(RequestParserInput{
+			Query:   c.Request.URL.Query(),
+			Body:    body,
+			Headers: c.Request.Header,
+			Raw:     params,
+		})
+		if perr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": perr.Error(),
+			})
+			return
+		}
+		if parsed != nil {
+			params = parsed
 		}
 	}
 		

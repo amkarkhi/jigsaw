@@ -21,7 +21,7 @@ import "reactflow/dist/style.css";
 import Editor from "@monaco-editor/react";
 import { defineJigsawTheme, JIGSAW_THEME } from "../lib/monacoTheme";
 import yaml from "js-yaml";
-import { api, Diagnostic, FlowSummary, LogicHandler, TaskSummary, JSONSchema } from "../api/client";
+import { api, Diagnostic, EndpointSummary, FlowSummary, LogicHandler, TaskSummary, JSONSchema } from "../api/client";
 import { autoLayout, Canvas, CanvasEdge, CanvasNode, computeBranchPaths, decompile, layoutKey, safeCompile } from "../graph/dag";
 import { Flow, FlowFile, TaskRef, Bind } from "../graph/types";
 import { validateCanvas, ValidationResult } from "../graph/validate";
@@ -106,6 +106,7 @@ function FlowGraphInner() {
   const [logicHandlers, setLogicHandlers] = useState<LogicHandler[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [flowList, setFlowList] = useState<FlowSummary[]>([]);
+  const [endpoints, setEndpoints] = useState<EndpointSummary[]>([]);
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
   const [draftsOpen, setDraftsOpen] = useState(false);
   const [draftSaveOpen, setDraftSaveOpen] = useState(false);
@@ -246,6 +247,7 @@ function FlowGraphInner() {
     api.tasks().then(setPalette).catch(() => {});
     api.logic().then((r) => setLogicHandlers(r.handlers)).catch(() => {});
     api.flows().then(setFlowList).catch(() => {});
+    api.endpoints().then(setEndpoints).catch(() => {});
 
     return () => {
       cancelled = true;
@@ -309,6 +311,21 @@ function FlowGraphInner() {
     const canvas = rfToCanvas(nodes, edges);
     return applyBindings(flow.tasks, canvas, bindings);
   }, [flow, nodes, edges, bindings]);
+
+  // Request params seeded into scope by any endpoint that routes to this
+  // flow. Union across endpoints — mirrors collectFlowRequestParams in
+  // pkg/engine/flow_validator.go so the UI's available-scope list matches
+  // what the validator already accepts.
+  const flowRequestParams: string[] = useMemo(() => {
+    if (!flow) return [];
+    const set = new Set<string>();
+    for (const ep of endpoints) {
+      const matches = ep.flows.some((m) => (m as { flow?: string; flow_name?: string }).flow === flow.name || (m as { flow_name?: string }).flow_name === flow.name);
+      if (!matches) continue;
+      for (const p of ep.request_params ?? []) set.add(p);
+    }
+    return Array.from(set).sort();
+  }, [endpoints, flow]);
 
   // Map of node id → validation issues, used both to paint the canvas and to
   // surface the messages in a tooltip when the user hovers the node's chip.
@@ -1165,6 +1182,7 @@ function FlowGraphInner() {
                 onDelete={() => deleteNode(selectedNode)}
                 taskSchemas={taskSchemas}
                 flowTasks={liveFlowTasks}
+                requestParams={flowRequestParams}
                 nodeOccurrence={(() => {
                   // Count preceding nodes with the same taskName + branchPath
                   let count = 0;
@@ -1365,6 +1383,7 @@ function Inspector({
   onDelete,
   taskSchemas,
   flowTasks,
+  requestParams,
   nodeOccurrence,
 }: {
   nodeId: string;
@@ -1384,6 +1403,7 @@ function Inspector({
   onDelete: () => void;
   taskSchemas: TaskSchemaMap;
   flowTasks: TaskRef[];
+  requestParams: string[];
   nodeOccurrence: number;
 }) {
   return (
@@ -1424,12 +1444,27 @@ function Inspector({
         </div>
       )}
 
+      {requestParams.length > 0 && (
+        <Section title="Endpoint request parameters" storageKey="endpoint-params">
+          <div className="meta" style={{ marginBottom: 6 }}>
+            Seeded into scope by endpoints that route to this flow. Bind any
+            task input to one of these names.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {requestParams.map((p) => (
+              <span key={p} className="badge" title="Request parameter (scope key)">{p}</span>
+            ))}
+          </div>
+        </Section>
+      )}
+
       <BindEditor
         taskName={data.taskName}
         bindings={bindings}
         onChange={onChangeBindings}
         taskSchemas={taskSchemas}
         flowTasks={flowTasks}
+        requestParams={requestParams}
         targetBranchPath={data.branchPath}
         targetOccurrence={nodeOccurrence}
       />
@@ -2412,6 +2447,7 @@ function BindEditor({
   onChange,
   taskSchemas,
   flowTasks,
+  requestParams,
   targetBranchPath,
   targetOccurrence,
 }: {
@@ -2420,6 +2456,7 @@ function BindEditor({
   onChange: (next: Bind | undefined) => void;
   taskSchemas: TaskSchemaMap;
   flowTasks: TaskRef[];
+  requestParams: string[];
   targetBranchPath: string[] | undefined;
   targetOccurrence: number;
 }) {
@@ -2467,8 +2504,8 @@ function BindEditor({
 
   // Compute available scope variables at this node's position in the flow.
   const scope: ScopeVar[] = useMemo(
-    () => computeScopeAtNode(flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas),
-    [flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas],
+    () => computeScopeAtNode(flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas, requestParams),
+    [flowTasks, taskName, targetBranchPath, targetOccurrence, taskSchemas, requestParams],
   );
 
   // Quick lookup map: scope key → ScopeVar (for collision detection).
@@ -3671,12 +3708,20 @@ function computeScopeAtNode(
   targetBranchPath: string[] | undefined,
   targetOccurrence: number,
   taskSchemas: TaskSchemaMap,
+  requestParams: string[] = [],
 ): ScopeVar[] {
   // Mutable counter of remaining occurrences to skip.
   let remaining = targetOccurrence;
   let found = false;
 
   const scope = new Map<string, ScopeVar>();
+
+  // Seed request params (mirrors pkg/engine/flow_validator.go: every endpoint
+  // request_param mapping to this flow is available in scope from the start).
+  // Type "" treats them as wildcard for typesCompatible.
+  for (const p of requestParams) {
+    scope.set(p, { name: p, type: "", source: "request_param" });
+  }
 
   // Returns true if we should stop (we've reached the target).
   function walkTasks(refs: TaskRef[], branchPath: string[]): boolean {

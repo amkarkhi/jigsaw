@@ -32,7 +32,14 @@ type Endpoint struct {
 	// parameters). The flow validator uses this list to pre-populate its
 	// simulated scope so first-task inputs read from these keys validate
 	// cleanly. Names should match the scope keys produced by the gateway.
-	RequestParams []string       `yaml:"request_params,omitempty" json:"request_params,omitempty"`
+	// RequestParser names a function in the request-parser registry. When set,
+	// the HTTP layer hands the raw request (URL query + parsed body + headers)
+	// to that function and uses its returned map as the flow's parameters.
+	// The registry entry also declares the list of scope fields the parser
+	// publishes; jigsaw uses that list for flow-validator scope seeding and
+	// passes it to the parser as RequestParserInput.Fields.
+	// See pkg/server.RegisterRequestParser.
+	RequestParser string         `yaml:"request_parser,omitempty" json:"request_parser,omitempty"`
 	Metadata      map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 

@@ -1,11 +1,23 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 
+	"github.com/amkarkhi/jigsaw/pkg/parsers"
 	"github.com/amkarkhi/jigsaw/pkg/types"
 	"github.com/rs/zerolog"
 )
+
+var registerTestSeedParserOnce sync.Once
+
+func registerTestSeedParser() {
+	registerTestSeedParserOnce.Do(func() {
+		parsers.Register("test_seed_parser", func(in parsers.RequestParserInput) (map[string]any, error) {
+			return in.Raw, nil
+		})
+	})
+}
 
 type seedIn struct {
 	Q string `json:"q"`
@@ -24,6 +36,7 @@ func (seedLogic) Run(_ *types.ExecutionContext, _ seedIn, _ seedParams) (*seedOu
 // first task reads a required request parameter validates cleanly when an
 // endpoint declares that parameter under `request_params`.
 func TestValidatorSeedsScopeFromEndpointRequestParams(t *testing.T) {
+	registerTestSeedParser()
 	cfg := &types.Config{
 		Tasks: map[string]*types.Task{
 			"t_seed": {Name: "t_seed", Logic: "seed_logic"},
@@ -38,7 +51,7 @@ func TestValidatorSeedsScopeFromEndpointRequestParams(t *testing.T) {
 				Name:          "search",
 				Path:          "/api/search",
 				Method:        "GET",
-				RequestParams: []string{"query"},
+				RequestParser: "test_seed_parser",
 				Flows:         []types.FlowMapping{{Sub: 1, FlowName: "f_seed"}},
 			},
 		},

@@ -250,7 +250,7 @@ func (d *Dashboard) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			"method":         ep.Method,
 			"description":    ep.Description,
 			"flows":          flows,
-			"request_params": ep.RequestParams,
+			"request_parser": ep.RequestParser,
 		})
 	}
 	writeJSON(w, out)
