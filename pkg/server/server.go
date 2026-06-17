@@ -29,10 +29,36 @@ type Server struct {
 	logger           zerolog.Logger
 	config           *types.Config
 	ginEngine        *gin.Engine
+	handler          *handlerSwapper
+	middleware       []gin.HandlerFunc
+	pretty           bool
 	httpServer       *http.Server
 	mu               sync.RWMutex
 	hotReload        bool
 	flowResolver     FlowResolver
+}
+
+// handlerSwapper is the http.Handler we hand to http.Server. It forwards
+// every request to whichever *gin.Engine is current at the time of the
+// call, so a hot reload can install a brand-new engine (with the new
+// endpoint set) without restarting the listener. In-flight requests
+// finish on the old engine; new requests use the new one.
+type handlerSwapper struct {
+	mu sync.RWMutex
+	h  http.Handler
+}
+
+func (hs *handlerSwapper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	hs.mu.RLock()
+	h := hs.h
+	hs.mu.RUnlock()
+	h.ServeHTTP(w, r)
+}
+
+func (hs *handlerSwapper) set(h http.Handler) {
+	hs.mu.Lock()
+	hs.h = h
+	hs.mu.Unlock()
 }
 
 // Options for server configuration
@@ -118,24 +144,18 @@ func New(cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 		validator:        val,
 		logger:           logger,
 		config:           cfg,
+		middleware:       opts.Middleware,
+		pretty:           opts.Pretty,
 		hotReload:        opts.HotReload,
 		flowResolver:     opts.FlowResolver,
 	}
-	
-	// Setup Gin
+
 	if !opts.Pretty {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	
-	s.ginEngine = gin.New()
-	s.ginEngine.Use(gin.Recovery())
-	s.ginEngine.Use(s.loggingMiddleware())
-	for _, mw := range opts.Middleware {
-		s.ginEngine.Use(mw)
-	}
 
-	// Register routes
-	s.registerRoutes()
+	s.ginEngine = s.buildGinEngine(cfg)
+	s.handler = &handlerSwapper{h: s.ginEngine}
 
 	return s
 }
@@ -145,13 +165,13 @@ func New(cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *types.Config, logger zerolog.Logger, opts Options) *Server {
 	// Create router
 	rtr := router.New(cfg, logger)
-	
+
 	// Create config loader
 	configLoader := config.NewLoader(logger)
-	
+
 	// Create validator
 	val := validator.New(logger)
-	
+
 	s := &Server{
 		engine:           eng,
 		router:           rtr,
@@ -160,26 +180,46 @@ func NewWithEngine(eng *engine.Engine, providerReg *provider.Registry, cfg *type
 		validator:        val,
 		logger:           logger,
 		config:           cfg,
+		middleware:       opts.Middleware,
+		pretty:           opts.Pretty,
 		hotReload:        opts.HotReload,
 		flowResolver:     opts.FlowResolver,
 	}
-	
-	// Setup Gin
+
 	if !opts.Pretty {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	
-	s.ginEngine = gin.New()
-	s.ginEngine.Use(gin.Recovery())
-	s.ginEngine.Use(s.loggingMiddleware())
-	for _, mw := range opts.Middleware {
-		s.ginEngine.Use(mw)
-	}
 
-	// Register routes
-	s.registerRoutes()
+	s.ginEngine = s.buildGinEngine(cfg)
+	s.handler = &handlerSwapper{h: s.ginEngine}
 
 	return s
+}
+
+// buildGinEngine builds a fresh *gin.Engine wired for the given config:
+// recovery + logging + host middleware, then all framework routes and
+// per-endpoint routes. Called once at construction and again from
+// onConfigChange so a config reload can install a brand-new router
+// without restarting the listener.
+func (s *Server) buildGinEngine(cfg *types.Config) *gin.Engine {
+	g := gin.New()
+	g.Use(gin.Recovery())
+	g.Use(s.loggingMiddleware())
+	for _, mw := range s.middleware {
+		g.Use(mw)
+	}
+
+	// Framework routes.
+	g.GET("/health", s.healthHandler)
+	g.GET("/api/_validate/logic", s.validateLogicHandlers)
+	g.GET("/api/_validate/logic/:name", s.getLogicHandlerInfo)
+	g.GET("/api/_logic", s.listLogicHandlers)
+
+	// Configured endpoints.
+	for _, endpoint := range cfg.Endpoints {
+		s.registerEndpointOn(g, endpoint)
+	}
+	return g
 }
 
 // GetEngine returns the server's engine (for registering logic handlers)
@@ -205,10 +245,11 @@ func (s *Server) Start(port int, configPath string) error {
 		}
 	}
 	
-	// Create HTTP server
+	// Create HTTP server. Handler is the swapper so a hot reload can
+	// replace the live *gin.Engine without restarting the listener.
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: s.ginEngine,
+		Handler: s.handler,
 	}
 	
 	s.logger.Info().Str("address", s.httpServer.Addr).Msg("Server started successfully")
@@ -238,44 +279,27 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// registerRoutes registers all endpoint routes
-func (s *Server) registerRoutes() {
-	// Health check
-	s.ginEngine.GET("/health", s.healthHandler)
-	
-	// Validation endpoints for UI
-	s.ginEngine.GET("/api/_validate/logic", s.validateLogicHandlers)
-	s.ginEngine.GET("/api/_validate/logic/:name", s.getLogicHandlerInfo)
-	s.ginEngine.GET("/api/_logic", s.listLogicHandlers)
-	
-	// Register all configured endpoints
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	
-	for _, endpoint := range s.config.Endpoints {
-		s.registerEndpoint(endpoint)
-	}
-}
-
-// registerEndpoint registers a single endpoint
-func (s *Server) registerEndpoint(endpoint *types.Endpoint) {
+// registerEndpointOn binds a configured endpoint onto the given gin
+// engine. Used by buildGinEngine for both initial construction and the
+// hot-reload rebuild.
+func (s *Server) registerEndpointOn(g *gin.Engine, endpoint *types.Endpoint) {
 	handler := s.createEndpointHandler(endpoint)
-	
+
 	switch endpoint.Method {
 	case "GET":
-		s.ginEngine.GET(endpoint.Path, handler)
+		g.GET(endpoint.Path, handler)
 	case "POST":
-		s.ginEngine.POST(endpoint.Path, handler)
+		g.POST(endpoint.Path, handler)
 	case "PUT":
-		s.ginEngine.PUT(endpoint.Path, handler)
+		g.PUT(endpoint.Path, handler)
 	case "DELETE":
-		s.ginEngine.DELETE(endpoint.Path, handler)
+		g.DELETE(endpoint.Path, handler)
 	case "PATCH":
-		s.ginEngine.PATCH(endpoint.Path, handler)
+		g.PATCH(endpoint.Path, handler)
 	default:
-		s.ginEngine.POST(endpoint.Path, handler)
+		g.POST(endpoint.Path, handler)
 	}
-	
+
 	s.logger.Info().Str("path", endpoint.Path).Str("method", endpoint.Method).Str("name", endpoint.Name).Msg("Endpoint registered")
 }
 
@@ -497,40 +521,68 @@ func (s *Server) loggingMiddleware() gin.HandlerFunc {
 	}
 }
 
-// onConfigChange handles configuration reload
+// onConfigChange handles configuration reload. The reload is
+// validate-then-swap: the new config is parsed and validated in full
+// before anything live changes. If validation fails, or the new config
+// is degenerate (everything empty — likely a transient editor
+// truncate), the live server keeps running on the previous config and a
+// warning is logged. On success, a fresh *gin.Engine is built and
+// atomically swapped in via the handler swapper, so endpoint and
+// middleware changes take effect without restarting the listener.
+// Logic handlers are NOT re-registered — they live on the engine's
+// logicRegistry, which Engine.UpdateConfig preserves across reloads.
 func (s *Server) onConfigChange(newConfig *types.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.logger.Info().Msg("Reloading configuration")
 
-	// Validate new configuration
 	if err := s.validator.ValidateConfig(newConfig); err != nil {
-		s.logger.Error().Err(err).Msg("Invalid configuration, keeping old config")
+		s.logger.Error().Err(err).Msg("Invalid configuration; keeping previous configuration live")
 		return
 	}
-	
-	// Update configuration
-	s.config = newConfig
-	
-	// Update router
-	s.router.UpdateConfig(newConfig)
-	
-	// Re-register providers
+
+	// Second defense beyond loader.go's empty-config guard: refuse to
+	// blank out the live server with a config that has nothing in it.
+	if len(newConfig.Tasks) == 0 && len(newConfig.Flows) == 0 &&
+		len(newConfig.Providers) == 0 && len(newConfig.Endpoints) == 0 {
+		s.logger.Warn().Msg("Reloaded configuration has no tasks/flows/providers/endpoints; keeping previous configuration live")
+		return
+	}
+
+	// Build the new gin engine BEFORE touching live state. If anything
+	// inside endpoint wiring panics, the deferred recover restores the
+	// previous engine so the server stays responsive.
+	var newEngine *gin.Engine
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error().Interface("panic", r).Msg("Reload panicked while building router; keeping previous configuration live")
+				newEngine = nil
+			}
+		}()
+		newEngine = s.buildGinEngine(newConfig)
+	}()
+	if newEngine == nil {
+		return
+	}
+
+	// Commit: providers, router, engine config, then the handler swap.
 	for _, prov := range newConfig.Providers {
 		s.providerRegistry.RegisterConfig(prov)
 	}
-	
-	// NOTE: We do NOT recreate the engine here because that would lose
-	// all registered logic handlers. The engine's config is updated internally.
-	// If you need to reload logic handlers, restart the server.
-	
-	s.logger.Info().Int("tasks", len(newConfig.Tasks)).Int("flows", len(newConfig.Flows)).Int("providers", len(newConfig.Providers)).Int("endpoints", len(newConfig.Endpoints)).Msg("Configuration reloaded successfully")
-	s.logger.Warn().Msg("Logic handlers are NOT reloaded (restart server to reload handlers)")
+	s.router.UpdateConfig(newConfig)
+	s.engine.UpdateConfig(newConfig)
+	s.config = newConfig
+	s.ginEngine = newEngine
+	s.handler.set(newEngine)
 
-	// Note: Endpoints are not re-registered in Gin as that would require
-	// recreating the entire Gin engine. For endpoint changes, restart is required.
-	s.logger.Warn().Msg("Endpoint changes require server restart")
+	s.logger.Info().
+		Int("tasks", len(newConfig.Tasks)).
+		Int("flows", len(newConfig.Flows)).
+		Int("providers", len(newConfig.Providers)).
+		Int("endpoints", len(newConfig.Endpoints)).
+		Msg("Configuration reloaded successfully (endpoints and routes hot-swapped)")
 }
 
 // validateLogicHandlers validates all logic handlers

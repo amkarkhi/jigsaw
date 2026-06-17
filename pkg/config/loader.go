@@ -69,6 +69,14 @@ func (l *Loader) Load(configPath string) (*types.Config, error) {
 
 // Watch watches for configuration changes and triggers reload.
 func (l *Loader) Watch(configPath string, onChange func(*types.Config)) error {
+	// Record configPath up front so the reload loop knows where to load from
+	// even when the host called Load() through a separate Loader instance
+	// (the common pattern: app boots config once, then hands the Server its
+	// own Loader for hot-reload).
+	l.mu.Lock()
+	l.configPath = configPath
+	l.mu.Unlock()
+
 	var err error
 	l.watcher, err = fsnotify.NewWatcher()
 	if err != nil {
@@ -145,7 +153,16 @@ func (l *Loader) watchLoop(onChange func(*types.Config)) {
 					l.logger.Error().Err(err).Msg("Failed to reload configuration")
 					continue
 				}
-				l.logger.Info().Msg("Configuration reloaded successfully")
+				// Guard against a transient empty read — editors that
+				// truncate-then-write can momentarily produce a config
+				// with nothing in it. Reloading such a snapshot would
+				// silently zero out the live server. Skip and wait for
+				// the real write.
+				if len(config.Tasks) == 0 && len(config.Flows) == 0 &&
+					len(config.Providers) == 0 && len(config.Endpoints) == 0 {
+					l.logger.Warn().Str("path", configPath).Msg("Reloaded configuration is empty; keeping previous configuration")
+					continue
+				}
 				onChange(config)
 			}
 

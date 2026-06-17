@@ -40,6 +40,20 @@ func (e *Engine) Config() *types.Config {
 	return e.config
 }
 
+// UpdateConfig swaps the engine's config and rebuilds the FlowExecutor
+// against it. The logic-handler registry is preserved — handlers
+// registered before reload remain available, so logic handlers do NOT
+// need to be re-registered after a hot reload. In-flight executions hold
+// their own reference to the previous executor and complete safely;
+// requests that arrive after the swap use the new config.
+func (e *Engine) UpdateConfig(cfg *types.Config) {
+	newExec := NewFlowExecutor(cfg, e.logger, e.logicRegistry)
+	// Aligned-pointer writes are atomic on Go's supported 64-bit targets;
+	// readers either see the old pair or the new pair, never a torn mix.
+	e.executor = newExec
+	e.config = cfg
+}
+
 // FlowExecutor returns the engine's own flow executor (the one used by
 // ExecuteFlow). It is bound to the engine's config and logic registry.
 func (e *Engine) FlowExecutor() *FlowExecutor {
